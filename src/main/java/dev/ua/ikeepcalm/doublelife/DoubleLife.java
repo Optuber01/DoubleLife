@@ -9,6 +9,8 @@ import dev.ua.ikeepcalm.doublelife.command.DoubleLifeCommand;
 import dev.ua.ikeepcalm.doublelife.config.PluginConfig;
 import dev.ua.ikeepcalm.doublelife.domain.service.SessionManager;
 import dev.ua.ikeepcalm.doublelife.listener.ActivityListener;
+import dev.ua.ikeepcalm.doublelife.listener.AuditListener;
+import dev.ua.ikeepcalm.doublelife.listener.InventoryAuditListener;
 import dev.ua.ikeepcalm.doublelife.listener.CommandInterceptor;
 import dev.ua.ikeepcalm.doublelife.listener.PlayerJoinListener;
 import dev.ua.ikeepcalm.doublelife.config.LangConfig;
@@ -134,6 +136,8 @@ public class DoubleLife extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new ActivityListener(this), this);
         getServer().getPluginManager().registerEvents(new CommandInterceptor(this), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(this), this);
+        getServer().getPluginManager().registerEvents(new AuditListener(this), this);
+        getServer().getPluginManager().registerEvents(new InventoryAuditListener(this), this);
     }
 
     public void reload() {
