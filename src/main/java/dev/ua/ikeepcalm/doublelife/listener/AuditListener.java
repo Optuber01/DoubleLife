@@ -6,6 +6,11 @@ import dev.ua.ikeepcalm.doublelife.audit.ActivityAuditor.ItemMove;
 import dev.ua.ikeepcalm.doublelife.domain.model.SessionData;
 import dev.ua.ikeepcalm.doublelife.util.StaffGroups;
 import org.bukkit.Location;
+import org.bukkit.command.BlockCommandSender;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
+import org.bukkit.command.RemoteConsoleCommandSender;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
@@ -22,6 +27,7 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerTeleportEvent;
+import org.bukkit.event.server.ServerCommandEvent;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.Set;
@@ -56,9 +62,27 @@ public class AuditListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     public void onCommand(PlayerCommandPreprocessEvent event) {
         SessionData session = session(event.getPlayer());
+        if (!event.isCancelled()) {
+            auditor().noteCommand(event.getPlayer().getUniqueId(), "player",
+                    session == null ? null : session.getSessionId(), event.getMessage());
+        }
         if (session != null) {
             auditor().command(event.getPlayer(), session, event.getMessage(), event.isCancelled());
         }
+    }
+
+    /** Console, RCON and command block commands, so a COMMAND gamemode change can name its dispatcher. */
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public void onServerCommand(ServerCommandEvent event) {
+        auditor().noteCommand(null, dispatcher(event.getSender()), null, event.getCommand());
+    }
+
+    private static String dispatcher(CommandSender sender) {
+        if (sender instanceof RemoteConsoleCommandSender) return "rcon";
+        if (sender instanceof ConsoleCommandSender) return "console";
+        if (sender instanceof BlockCommandSender) return "command_block";
+        if (sender instanceof Entity) return "entity";
+        return "other";
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

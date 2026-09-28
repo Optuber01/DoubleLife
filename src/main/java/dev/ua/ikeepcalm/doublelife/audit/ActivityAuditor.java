@@ -65,6 +65,8 @@ public final class ActivityAuditor {
     /** Player UUID to the DoubleLife-internal operation currently changing that player's state. */
     private final Map<UUID, String> systemContext = new ConcurrentHashMap<>();
 
+    /** The most recent command dispatched by a player or the console; matched to COMMAND gamemode changes. */
+    private CommandSource lastCommand;
     public ActivityAuditor(AuditEmitter emitter, Supplier<List<Pattern>> sensitivePatterns) {
         this.emitter = emitter;
         this.sensitivePatterns = sensitivePatterns;
@@ -101,6 +103,28 @@ public final class ActivityAuditor {
 
     public void command(Player player, SessionData session, String raw, boolean cancelled) {
         CommandNames.Parsed parsed = CommandNames.parse(raw);
+    /**
+     * Remembers who issued the command being dispatched. Bukkit does not tell a
+     * {@link PlayerGameModeChangeEvent} with cause COMMAND who ran the command, but the command
+     * runs in the same tick right after this is recorded, so the change is attributed to it.
+     * Only the label is kept, never the arguments.
+     */
+    public void noteCommand(UUID sourceId, String dispatcher, UUID sourceSessionId, String message) {
+        String text = message == null ? "" : message.strip();
+        int space = text.indexOf(' ');
+        String label = space < 0 ? text : text.substring(0, space);
+        lastCommand = new CommandSource(sourceId, dispatcher, sourceSessionId, label, Bukkit.getCurrentTick());
+    }
+
+    /** The command dispatched in the current tick, or null. */
+    private CommandSource currentCommand() {
+        CommandSource source = lastCommand;
+        return source != null && source.tick() == Bukkit.getCurrentTick() ? source : null;
+    }
+
+    private record CommandSource(UUID sourceId, String dispatcher, UUID sessionId, String label, int tick) {
+    }
+
         boolean sensitive = isSensitive(parsed, raw);
         UUID target = resolveTarget(player, parsed);
         boolean chat = parsed.names().stream().anyMatch(CHAT_COMMANDS::contains);
@@ -268,7 +292,11 @@ public final class ActivityAuditor {
 
     // ---------------------------------------------------------------- state rows
 
-    /** Gamemode change of a staff member or a session player; {@code session} may be null. */
+    /**
+     * Gamemode change of a staff member or a session player; {@code session} may be null.
+     * Actor: nobody for DoubleLife's own changes, the command issuer (matched in the same tick,
+     * empty for console and command blocks) for COMMAND, the player otherwise.
+     */
     public void gamemode(Player player, SessionData session, PlayerGameModeChangeEvent event) {
         GameMode from = player.getGameMode();
         String context = systemContext.get(player.getUniqueId());
@@ -276,7 +304,10 @@ public final class ActivityAuditor {
         emitter.emit(AuditEmitter.row(GAMEMODE)
                 .risk(event.getNewGameMode() == GameMode.CREATIVE ? AuditRisk.HIGH : AuditRisk.NORMAL)
                 .subject(player.getUniqueId())
-                .actor(context == null && event.getCause() != PlayerGameModeChangeEvent.Cause.COMMAND ? player.getUniqueId() : null)
+                .actor(actor)
+        boolean byCommand = context == null && event.getCause() == PlayerGameModeChangeEvent.Cause.COMMAND;
+        CommandSource source = byCommand ? currentCommand() : null;
+        UUID actor = context != null ? null : byCommand ? (source == null ? null : source.sourceId()) : player.getUniqueId();
                 .correlation(sessionId)
                 .business(sessionId == null ? player.getUniqueId().toString() : sessionId.toString())
                 .put("session_id", sessionId)
@@ -289,6 +320,9 @@ public final class ActivityAuditor {
                 .build());
     }
 
+                .put("source_dispatcher", byCommand ? (source == null ? "unknown" : source.dispatcher()) : null)
+                .put("source_command_name", source == null ? null : CommandNames.parse(source.label()).label())
+                .put("source_session_id", source == null ? null : source.sessionId())
     public void teleport(Player player, SessionData session, PlayerTeleportEvent event) {
         Location to = event.getTo();
         Player nearest = nearestOther(player, to);
