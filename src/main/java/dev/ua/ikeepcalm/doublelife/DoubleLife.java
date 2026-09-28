@@ -2,6 +2,9 @@ package dev.ua.ikeepcalm.doublelife;
 
 import dev.rollczi.litecommands.LiteCommands;
 import dev.rollczi.litecommands.bukkit.LiteBukkitFactory;
+import dev.ua.ikeepcalm.doublelife.audit.ActivityAuditor;
+import dev.ua.ikeepcalm.doublelife.audit.AuditEmitter;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor;
 import dev.ua.ikeepcalm.doublelife.command.DoubleLifeCommand;
 import dev.ua.ikeepcalm.doublelife.config.PluginConfig;
 import dev.ua.ikeepcalm.doublelife.domain.service.SessionManager;
@@ -36,6 +39,9 @@ public class DoubleLife extends JavaPlugin {
     private SessionReporter sessionReporter;
     private OpGuardService opGuardService;
     private LiteCommands<CommandSender> liteCommands;
+    private AuditEmitter auditEmitter;
+    private SessionAuditor sessionAuditor;
+    private ActivityAuditor activityAuditor;
 
     @Override
     public void onEnable() {
@@ -48,6 +54,10 @@ public class DoubleLife extends JavaPlugin {
         saveDefaultConfig();
         this.pluginConfig = new PluginConfig(this);
         this.langConfig = new LangConfig(this);
+
+        this.auditEmitter = new AuditEmitter(this);
+        this.sessionAuditor = new SessionAuditor(auditEmitter);
+        this.activityAuditor = new ActivityAuditor(auditEmitter, () -> pluginConfig.getSensitiveCommandPatterns());
 
         if (!setupLuckPerms()) {
             getLogger().severe(langConfig.getMessage("status.luckperms-not-found"));
@@ -67,33 +77,41 @@ public class DoubleLife extends JavaPlugin {
         // Sweep for unauthorised operators every 20 ticks
         getServer().getScheduler().runTaskTimer(this,
                 () -> opGuardService.checkAllOnlinePlayers(), 20L, 20L);
+        // Emit batched audit rows whose window elapsed
+        getServer().getScheduler().runTaskTimer(this, () -> activityAuditor.flushStale(), 100L, 100L);
 
         getLogger().info(langConfig.getMessage("console.plugin-enabled"));
     }
 
     @Override
     public void onDisable() {
-        if (sessionManager != null) {
-            try {
-                sessionManager.saveSessionsOnShutdown();
-                sessionManager.endAllSessions();
-            } catch (Exception e) {
-                getLogger().severe("Error during session cleanup: " + e.getMessage());
+        try {
+            if (sessionManager != null) {
+                try {
+                    sessionManager.saveSessionsOnShutdown();
+                    sessionManager.endAllSessions();
+                } catch (Exception e) {
+                    getLogger().severe("Error during session cleanup: " + e.getMessage());
+                }
             }
-        }
 
-        if (liteCommands != null) {
-            try {
-                liteCommands.unregister();
-            } catch (Exception e) {
-                getLogger().severe("Error unregistering commands: " + e.getMessage());
+            if (liteCommands != null) {
+                try {
+                    liteCommands.unregister();
+                } catch (Exception e) {
+                    getLogger().severe("Error unregistering commands: " + e.getMessage());
+                }
             }
-        }
 
-        if (langConfig != null) {
-            getLogger().info(langConfig.getMessage("console.plugin-disabled"));
-        } else {
-            getLogger().info("DoubleLife plugin disabled.");
+            if (langConfig != null) {
+                getLogger().info(langConfig.getMessage("console.plugin-disabled"));
+            } else {
+                getLogger().info("DoubleLife plugin disabled.");
+            }
+        } finally {
+            if (auditEmitter != null) {
+                auditEmitter.close();
+            }
         }
     }
 
