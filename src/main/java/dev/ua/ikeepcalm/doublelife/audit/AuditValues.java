@@ -72,7 +72,11 @@ public final class AuditValues {
         return values;
     }
 
-    private static String displayName(ItemStack item) {
+    /** Plain-text custom name (max 64 chars), or null when the stack has none. */
+    public static String displayName(ItemStack item) {
+        if (isEmpty(item)) {
+            return null;
+        }
         try {
             ItemMeta meta = item.getItemMeta();
             if (meta == null || !meta.hasDisplayName() || meta.displayName() == null) {

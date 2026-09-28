@@ -29,7 +29,7 @@ public final class AuditEmitter implements AutoCloseable {
     /** Keys that may use the client's full per-value budget; also any key ending in these suffixes. */
     private static final Set<String> LONG_TEXT_KEYS = Set.of(
             "command", "entry_commands", "granted_nodes", "perms_removed",
-            "temporary_permissions", "materials", "reapplied_nodes");
+            "temporary_permissions", "materials", "display_names", "reapplied_nodes");
     private static final Set<String> LONG_TEXT_SUFFIXES = Set.of("items", "item_uuids");
 
     /** Null when the audit client failed to initialise; every call is then a no-op. */

@@ -20,6 +20,7 @@ final class ItemBatcher {
 
     static final long WINDOW_MILLIS = 10_000L;
     private static final int MAX_MATERIALS = 48;
+    private static final int MAX_NAMED = 24;
 
     private final Map<String, Batch> batches = new LinkedHashMap<>();
     private final Consumer<Batch> sink;
@@ -28,8 +29,11 @@ final class ItemBatcher {
         this.sink = sink;
     }
 
-    /** Adds {@code amount} of {@code material}; flushes the previous batch for the key if its window elapsed. */
-    void add(BatchKey key, String material, int amount, Location location, Boolean delivered) {
+    /**
+     * Adds {@code amount} of {@code material} ({@code displayName} is the stack's custom name, or
+     * null); flushes the previous batch for the key if its window elapsed.
+     */
+    void add(BatchKey key, String material, String displayName, int amount, Location location, Boolean delivered) {
         long now = System.currentTimeMillis();
         String id = key.id();
         Batch batch = batches.get(id);
@@ -41,7 +45,7 @@ final class ItemBatcher {
             batch = new Batch(key, now);
             batches.put(id, batch);
         }
-        batch.add(material, amount, location, delivered, now);
+        batch.add(material, displayName, amount, location, delivered, now);
     }
 
     /** Flushes every batch whose window elapsed (called from a periodic task). */
@@ -86,6 +90,8 @@ final class ItemBatcher {
         final long startedAt;
         long lastAt;
         final Map<String, Integer> counts = new TreeMap<>();
+        /** Custom-named stacks as {@code MATERIAL "name"} to amount; the rest count as {@code OTHER_NAMED}. */
+        final Map<String, Integer> named = new TreeMap<>();
         int total;
         int events;
         int delivered;
@@ -100,11 +106,10 @@ final class ItemBatcher {
             this.startedAt = startedAt;
         }
 
-        void add(String material, int amount, Location location, Boolean wasDelivered, long now) {
-            if (counts.containsKey(material) || counts.size() < MAX_MATERIALS) {
-                counts.merge(material, amount, Integer::sum);
-            } else {
-                counts.merge("OTHER", amount, Integer::sum);
+        void add(String material, String displayName, int amount, Location location, Boolean wasDelivered, long now) {
+            merge(counts, material, "OTHER", MAX_MATERIALS, amount);
+            if (displayName != null) {
+                merge(named, material + " \"" + displayName + '"', "OTHER_NAMED", MAX_NAMED, amount);
             }
             total += amount;
             events++;
@@ -126,11 +131,24 @@ final class ItemBatcher {
             maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z);
         }
 
+        private static void merge(Map<String, Integer> target, String key, String overflow, int max, int amount) {
+            target.merge(target.containsKey(key) || target.size() < max ? key : overflow, amount, Integer::sum);
+        }
+
         String materials() {
+            return list(counts);
+        }
+
+        /** Null when no stack in the window had a custom name. */
+        String displayNames() {
+            return named.isEmpty() ? null : list(named);
+        }
+
+        private static String list(Map<String, Integer> values) {
             StringBuilder text = new StringBuilder();
-            counts.forEach((material, count) -> {
+            values.forEach((label, count) -> {
                 if (!text.isEmpty()) text.append(", ");
-                text.append(material).append(" x").append(count);
+                text.append(label).append(" x").append(count);
             });
             return text.toString();
         }

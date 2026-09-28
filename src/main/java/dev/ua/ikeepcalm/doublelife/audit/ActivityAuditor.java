@@ -65,14 +65,13 @@ public final class ActivityAuditor {
     private final Map<UUID, Set<String>> reportedCreative = new HashMap<>();
     /** Player UUID to the DoubleLife-internal operation currently changing that player's state. */
     private final Map<UUID, String> systemContext = new ConcurrentHashMap<>();
-
     /** The most recent command dispatched by a player or the console; matched to COMMAND gamemode changes. */
     private CommandSource lastCommand;
 
     public ActivityAuditor(AuditEmitter emitter, Supplier<List<Pattern>> sensitivePatterns, ClaimOwners claimOwners) {
         this.emitter = emitter;
-        this.claimOwners = claimOwners;
         this.sensitivePatterns = sensitivePatterns;
+        this.claimOwners = claimOwners;
         this.batcher = new ItemBatcher(this::emitBatch);
     }
 
@@ -104,8 +103,6 @@ public final class ActivityAuditor {
 
     // ---------------------------------------------------------------- commands
 
-    public void command(Player player, SessionData session, String raw, boolean cancelled) {
-        CommandNames.Parsed parsed = CommandNames.parse(raw);
     /**
      * Remembers who issued the command being dispatched. Bukkit does not tell a
      * {@link PlayerGameModeChangeEvent} with cause COMMAND who ran the command, but the command
@@ -128,6 +125,8 @@ public final class ActivityAuditor {
     private record CommandSource(UUID sourceId, String dispatcher, UUID sessionId, String label, int tick) {
     }
 
+    public void command(Player player, SessionData session, String raw, boolean cancelled) {
+        CommandNames.Parsed parsed = CommandNames.parse(raw);
         boolean sensitive = isSensitive(parsed, raw);
         UUID target = resolveTarget(player, parsed);
         boolean chat = parsed.names().stream().anyMatch(CHAT_COMMANDS::contains);
@@ -202,7 +201,8 @@ public final class ActivityAuditor {
             return;
         }
         if (AuditValues.itemUuid(move.item()) == null) {
-            batcher.add(batchKey(move), move.item().getType().name(), move.amount(), move.location(), move.delivered());
+            batcher.add(batchKey(move), move.item().getType().name(), AuditValues.displayName(move.item()),
+                    move.amount(), move.location(), move.delivered());
             return;
         }
         if (move.kind().equals("creative_spawn") && !firstCreativeReport(move)) {
@@ -258,7 +258,7 @@ public final class ActivityAuditor {
 
     public void blocks(Player player, SessionData session, String kind, String material, Location location) {
         batcher.add(new ItemBatcher.BatchKey(BLOCKS, session.getSessionId(), player.getUniqueId(),
-                session.getMode().name(), kind, null, "", null), material, 1, location, null);
+                session.getMode().name(), kind, null, "", null), material, null, 1, location, null);
     }
 
     private void emitBatch(ItemBatcher.Batch batch) {
@@ -273,6 +273,7 @@ public final class ActivityAuditor {
                 .put("kind", key.kind())
                 .put("batched", true)
                 .put("materials", batch.materials())
+                .put("display_names", batch.displayNames())
                 .put("total_amount", batch.total)
                 .put("event_count", batch.events)
                 .put("window_start_ms", batch.startedAt)
@@ -304,13 +305,13 @@ public final class ActivityAuditor {
         GameMode from = player.getGameMode();
         String context = systemContext.get(player.getUniqueId());
         UUID sessionId = session == null ? null : session.getSessionId();
+        boolean byCommand = context == null && event.getCause() == PlayerGameModeChangeEvent.Cause.COMMAND;
+        CommandSource source = byCommand ? currentCommand() : null;
+        UUID actor = context != null ? null : byCommand ? (source == null ? null : source.sourceId()) : player.getUniqueId();
         emitter.emit(AuditEmitter.row(GAMEMODE)
                 .risk(event.getNewGameMode() == GameMode.CREATIVE ? AuditRisk.HIGH : AuditRisk.NORMAL)
                 .subject(player.getUniqueId())
                 .actor(actor)
-        boolean byCommand = context == null && event.getCause() == PlayerGameModeChangeEvent.Cause.COMMAND;
-        CommandSource source = byCommand ? currentCommand() : null;
-        UUID actor = context != null ? null : byCommand ? (source == null ? null : source.sourceId()) : player.getUniqueId();
                 .correlation(sessionId)
                 .business(sessionId == null ? player.getUniqueId().toString() : sessionId.toString())
                 .put("session_id", sessionId)
@@ -319,13 +320,13 @@ public final class ActivityAuditor {
                 .put("to", event.getNewGameMode().name())
                 .put("cause", event.getCause().name())
                 .put("actor_type", context == null ? event.getCause().name().toLowerCase() : context)
+                .put("source_dispatcher", byCommand ? (source == null ? "unknown" : source.dispatcher()) : null)
+                .put("source_command_name", source == null ? null : CommandNames.parse(source.label()).label())
+                .put("source_session_id", source == null ? null : source.sessionId())
                 .putAll(AuditValues.location(player.getLocation()))
                 .build());
     }
 
-                .put("source_dispatcher", byCommand ? (source == null ? "unknown" : source.dispatcher()) : null)
-                .put("source_command_name", source == null ? null : CommandNames.parse(source.label()).label())
-                .put("source_session_id", source == null ? null : source.sessionId())
     public void teleport(Player player, SessionData session, PlayerTeleportEvent event) {
         Location to = event.getTo();
         Player nearest = nearestOther(player, to);
@@ -371,7 +372,6 @@ public final class ActivityAuditor {
                 .build());
     }
 
-    /** UUID of the human owning a PLAYER or ENDER_CHEST view when it is not the viewer (invsee, /ec other). */
     /**
      * Owner of the items in {@code inventory}: the other player for invsee and another player's
      * ender chest, else the owner of the Lands claim a placed container stands in, when that is
@@ -393,6 +393,7 @@ public final class ActivityAuditor {
         return owner == null || owner.equals(viewer.getUniqueId()) ? null : owner;
     }
 
+    /** UUID of the human owning a PLAYER or ENDER_CHEST view when it is not the viewer (invsee, /ec other). */
     public static UUID otherOwner(Player viewer, InventoryHolder holder) {
         if (holder instanceof HumanEntity human && !human.getUniqueId().equals(viewer.getUniqueId())) {
             return human.getUniqueId();
