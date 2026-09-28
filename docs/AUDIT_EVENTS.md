@@ -19,8 +19,10 @@ in the session file, so a resumed session keeps its history.
   resume). It is also written to the `session_id` metadata key. Rows outside a session
   use a random correlation id and the subject UUID as businessId.
 - **actorId**: the staff player acting. It is left empty for system actions (LuckPerms
-  node changes, and gamemode changes made by a command or by DoubleLife itself). Those
-  rows carry `actor_type` instead.
+  node changes, gamemode changes made by DoubleLife itself, and gamemode changes made by a
+  console, RCON or command-block command). Those rows carry `actor_type` instead. For a
+  gamemode change caused by a player's command the actor is that player (see
+  `gamemode.changed`).
 - **subjectId**: the player whose state was changed (permission, op and gamemode rows).
 - **targetId**: another player affected (a command's target, a drop's receiver, an op target).
 - **Location**: `world`, `x`, `y`, `z` (block coordinates) are promoted to the indexed
@@ -46,7 +48,7 @@ in the session file, so a resumed session keeps its history.
 | Event | When | Outcome | Key metadata |
 | --- | --- | --- | --- |
 | `doublelife.staff.admin_mode.entered` | After the snapshot is taken, the inventory cleared, entry commands run and TURBO nodes added (`/dl start`, `/dl turbo`, GUI) | `COMMITTED`; risk `HIGH` for TURBO | `mode`, `trigger` (`command`/`gui`), `max_minutes`, `entry_commands`, `granted_nodes`, `lp_user_loaded` (TURBO only), `gamemode`, start location, `snapshot_*` digest of the saved inventory (storage, armour, off-hand) |
-| `doublelife.staff.admin_mode.exited` | After the snapshot restore, playerdata save, node/op removal and report | `COMMITTED`, or `FAILED` with reason `restore_failed` | `reason` (`manual`, `gui`, `expired`, `offline_expiry`, `quit`, `shutdown`), `player_online`, `duration_s`, `extension_min`, `activity_count`, `restore_ok`, `perms_removed`, `deop_applied`, `risk_level`, `risk_score`, `gamemode_before`, location **before** the teleport back, `before_*` digest (inventory discarded by the restore), `after_*` digest (restored inventory) |
+| `doublelife.staff.admin_mode.exited` | After the snapshot restore, playerdata save, node/op removal and report | `COMMITTED`, or `FAILED` with reason `restore_failed` | `reason` (`manual`, `gui`, `expired`, `offline_expiry`, `quit`, `shutdown`), `player_online`, `duration_s`, `extension_min`, `activity_count`, `restore_ok`, `perms_removed`, `lp_user_loaded` (TURBO only; absent if the removal threw first), `deop_applied`, `risk_level`, `risk_score`, `gamemode_before`, location **before** the teleport back, `before_*` digest (inventory discarded by the restore), `after_*` digest (restored inventory) |
 | `doublelife.staff.admin_mode.resumed` | Join after a restart when a saved session exists | `COMMITTED` for `resumed`; `CANCELLED` for `expired` / `skipped_active`; `FAILED` for `failed` | `outcome`, `reapplied_nodes`, `elapsed_min`, `inventory_cleared=false`, `restored_activity_count`, location |
 | `doublelife.staff.admin_mode.quit_during_session` | `PlayerQuitEvent` (LOWEST) while a session is active, before the session is ended | `OBSERVED`, risk `HIGH` | `gamemode`, `minutes_remaining`, location, digest of the full inventory at quit. An `exited` row with `reason=quit` follows |
 | `doublelife.staff.admin_mode.extended` | `/dl prolong` | `COMMITTED`, or `DENIED` with reason `cap_exceeded` (would go over 2x the base duration) | `added_min`, `new_total_min`, `lp_expiry_updated=false` (node expiry is not extended) |
@@ -65,12 +67,12 @@ in the session file, so a resumed session keeps its history.
 | Event | When | Outcome | Key metadata |
 | --- | --- | --- | --- |
 | `doublelife.staff.admin_mode.action` | Every command typed by a session player (MONITOR, cancelled commands included), and every console-dispatched entry command | Typed: `ATTEMPTED`, or `DENIED` if cancelled. Entry command: `OBSERVED`, or `FAILED` if dispatch returned false | `kind=command`, `dispatcher` (`player`/`console`), `command` (raw), `command_name`, `cancelled`, `sensitive`, location. `targetId` is the first of the first four arguments that names another online player. Risk `HIGH` when `sensitive` is true: `give`, `lp`, `op`, `co`, `tp`, `gamemode`, `stop`, `invsee`, ... or a match against `risk.sensitive-commands` |
-| `doublelife.staff.admin_mode.item_out` | Items leaving the session inventory (see kinds below) | `OBSERVED`; `ATTEMPTED` for `give_command` | `kind`, item fields, `container_type`, `owner_uuid`, `delivered` |
+| `doublelife.staff.admin_mode.item_out` | Items leaving the session inventory (see kinds below) | `OBSERVED`; `ATTEMPTED` for `give_command` | `kind`, item fields, `container_type`, `owner_uuid` (as for `container_opened`), `delivered` |
 | `doublelife.staff.admin_mode.item_in` | Items entering the session inventory: `pickup`, `armor_stand_take` | `OBSERVED` | item fields |
-| `doublelife.staff.admin_mode.container_opened` | Opening any storage inventory: containers, ender chest, entity storage, plugin virtual inventories, another player's inventory | `OBSERVED` | `inventory_type`, `holder_type`, `size`, `owner_uuid` (another player's inventory or ender chest), container location |
+| `doublelife.staff.admin_mode.container_opened` | Opening any storage inventory: containers, ender chest, entity storage, plugin virtual inventories, another player's inventory | `OBSERVED` | `inventory_type`, `holder_type`, `size`, `owner_uuid` + `owner_source` (`player`: another player's inventory or ender chest; `lands_claim`: owner of the Lands claim a placed container stands in, when that is not the viewer), `claim_owner_uuid`, `claim_land_ulid`, `claim_viewer_trusted` (inside a claim), `locked` (vanilla-lockable containers), container location |
 | `doublelife.staff.admin_mode.teleport` | Teleport with cause `COMMAND`, `PLUGIN` or `SPECTATE` (pearls and chorus fruit are skipped) | `OBSERVED` | `cause`, `from_world/x/y/z`, destination as `world/x/y/z`, `nearest_player_uuid` / `nearest_player_distance` (also `targetId`) |
 | `doublelife.staff.admin_mode.blocks` | Block place/break, batched (see below) | `OBSERVED` | `kind` (`place`/`break`), batch fields |
-| `doublelife.staff.gamemode.changed` | Any gamemode change of a session player or a staff member (`doublelife.use`, or a member of a `group-commands` group), in or out of a session | `OBSERVED`; risk `HIGH` when switching to creative | `from`, `to`, `cause`, `in_session`, `actor_type` (`entry_command`, `session_restore`, or the Bukkit cause) |
+| `doublelife.staff.gamemode.changed` | Any gamemode change of a session player or a staff member (`doublelife.use`, or a member of a `group-commands` group), in or out of a session | `OBSERVED`; risk `HIGH` when switching to creative | `from`, `to`, `cause`, `in_session`, `actor_type` (`entry_command`, `session_restore`, or the Bukkit cause). For cause `COMMAND`: `source_dispatcher` (`player`, `console`, `rcon`, `command_block`, `entity`, `other`, or `unknown` when no command was dispatched in the same tick), `source_command_name`, `source_session_id` (the issuer's session). Bukkit does not name the issuer, so the last command dispatched in the same tick is used; actorId is that player |
 
 ### `item_out` kinds
 
@@ -92,7 +94,8 @@ added to a batch keyed by session, event, kind and container. A batch becomes on
 10 seconds after it started. Batches are checked every 5 seconds, and all of a
 session's batches are flushed before its `exited` row (and at shutdown). Batch rows
 carry `batched=true`, `materials` (`MATERIAL xN`, up to 48 materials, the rest as
-`OTHER`), `total_amount`, `event_count`, `window_start_ms`, `window_end_ms`, the first
+`OTHER`), `display_names` (`MATERIAL "name" xN` for stacks with a custom name, up to 24, the
+rest as `OTHER_NAMED`; absent when none was named), `total_amount`, `event_count`, `window_start_ms`, `window_end_ms`, the first
 position as `world/x/y/z`, the bounding box `min_*`/`max_*`, and for drops
 `delivered_amount`/`undelivered_amount`. A stack **with** an `item_uuid` always gets
 its own row with the full item fields.
@@ -105,6 +108,11 @@ its own row with the full item fields.
 | `doublelife.system.config.reloaded` | `/dl reload` after the new config is loaded | `COMMITTED` | `actor_type`, `op_whitelist_enabled`, `temporary_permissions`, `entry_commands`, `max_minutes` |
 
 ## Behaviour notes tied to the rows
+
+- **Staff activity log, blocks**: the in-memory log (text log, Discord/callback report,
+  risk scoring) batches block place and break events separately, records the block type
+  at the moment of the event (broken blocks used to show as `AIR`), and logs the blocks
+  still batched when the session ends instead of dropping them.
 
 - **Quit**: a session now ends at `PlayerQuitEvent` (LOWEST priority), before the
   server saves the player. The snapshot is restored, playerdata saved, TURBO nodes
