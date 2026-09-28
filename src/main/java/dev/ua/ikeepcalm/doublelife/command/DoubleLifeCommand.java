@@ -156,6 +156,7 @@ public class DoubleLifeCommand {
     @Permission("doublelife.admin")
     public void reload(@Context CommandSender sender) {
         plugin.reload();
+        plugin.getSessionAuditor().configReloaded(sender, plugin.getPluginConfig());
         String message = (sender instanceof Player) ? 
             plugin.getLangConfig().getMessage("messages.reload-success", (Player) sender) : 
             plugin.getLangConfig().getMessage("messages.reload-success");

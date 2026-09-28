@@ -26,22 +26,37 @@ public class SessionReporter {
         this.riskAnalyzer = new RiskAnalyzer(plugin);
     }
 
+    /** Scores the session on the calling (main) thread; used for the report and the exited audit row. */
+    public RiskAssessment analyze(SessionData session) {
+        return riskAnalyzer.analyze(session);
+    }
+
     /**
      * Entry point called from SessionManager.endSession (main thread is fine — async tasks are spawned internally).
+     * While the plugin is disabling, Bukkit refuses new async tasks, so only the local log file is
+     * written and the flagged warning logged; Discord, callback and AI calls are skipped.
      */
-    public void report(SessionData session, String playerName) {
+    public void report(SessionData session, String playerName, RiskAssessment assessment) {
         // Write the file-based log synchronously (fast, local I/O)
         LogWriter logWriter = new LogWriter(plugin, session);
         logWriter.writeLog();
 
-        // Run scoring + notifications off the main thread
+        if (assessment == null) {
+            // Scoring failed (already logged); nothing to notify about.
+            return;
+        }
+
+        if (!plugin.isEnabled()) {
+            if (isFlagged(assessment)) {
+                logFlagged(playerName, assessment);
+            }
+            return;
+        }
+
+        // Run notifications off the main thread
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
-                RiskAssessment assessment = riskAnalyzer.analyze(session);
-
-                RiskLevel threshold = RiskLevel.fromString(plugin.getPluginConfig().getRiskThreshold());
-
-                if (assessment.getLevel().isAtLeast(threshold)) {
+                if (isFlagged(assessment)) {
                     // Flagged path — optionally call Gemini first
                     String aiVerdict = "AI summary disabled.";
                     if (plugin.getPluginConfig().isAiEnabled()) {
@@ -49,9 +64,7 @@ public class SessionReporter {
                         aiVerdict = plugin.getGeminiClient().requestVerdict(playerName, activityLogText, assessment);
                     }
 
-                    plugin.getLogger().warning("[DoubleLife] Suspicious session detected for " + playerName
-                            + " — Risk: " + assessment.getLevel().getDisplayName()
-                            + " (score " + assessment.getScore() + ")");
+                    logFlagged(playerName, assessment);
 
                     plugin.getWebhookUtil().sendFlaggedAlert(playerName, session, assessment, aiVerdict);
 
@@ -64,6 +77,17 @@ public class SessionReporter {
                 plugin.getLogger().severe("[DoubleLife] Error during session reporting for " + playerName + ": " + e.getMessage());
             }
         });
+    }
+
+    private boolean isFlagged(RiskAssessment assessment) {
+        RiskLevel threshold = RiskLevel.fromString(plugin.getPluginConfig().getRiskThreshold());
+        return assessment.getLevel().isAtLeast(threshold);
+    }
+
+    private void logFlagged(String playerName, RiskAssessment assessment) {
+        plugin.getLogger().warning("[DoubleLife] Suspicious session detected for " + playerName
+                + " — Risk: " + assessment.getLevel().getDisplayName()
+                + " (score " + assessment.getScore() + ")");
     }
 
     private String buildActivityLogText(SessionData session) {
