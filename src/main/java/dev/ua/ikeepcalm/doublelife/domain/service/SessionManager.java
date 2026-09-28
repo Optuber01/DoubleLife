@@ -2,6 +2,7 @@ package dev.ua.ikeepcalm.doublelife.domain.service;
 
 import dev.ua.ikeepcalm.doublelife.DoubleLife;
 import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.AdminModeRemoval;
 import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.AdminModeResult;
 import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.ExitDetails;
 import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.PermissionChange;
@@ -153,11 +154,11 @@ public class SessionManager {
         Map<String, Object> before = audit().captureBeforeRestore(player);
         boolean restoreOk = restorePlayerState(player, session);
 
-        List<String> permsRemoved = List.of();
+        AdminModeRemoval removal = null;
         boolean deopApplied = false;
         if (session.getMode() == DoubleLifeMode.TURBO) {
             boolean wasOp = player.isOp();
-            permsRemoved = removeAdminModeSafely(player, session);
+            removal = removeAdminModeSafely(player, session);
             deopApplied = wasOp && !player.isOp();
         }
 
@@ -179,17 +180,18 @@ public class SessionManager {
 
         player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage("session.end-success", player)));
         plugin.getLogger().info(plugin.getLangConfig().getMessage("log.session-ended", player.getName()));
-        audit().exited(player, session, new ExitDetails(reason, restoreOk, permsRemoved, deopApplied, before), risk);
+        audit().exited(player, session, new ExitDetails(reason, restoreOk, removal, deopApplied, before), risk);
         return restoreOk;
     }
 
-    private List<String> removeAdminModeSafely(Player player, SessionData session) {
+    /** Null lpUserLoaded when removal threw before LuckPerms was consulted. */
+    private AdminModeRemoval removeAdminModeSafely(Player player, SessionData session) {
         try {
             return removeAdminMode(player, session);
         } catch (RuntimeException e) {
             plugin.getLogger().severe("Failed to remove admin mode for " + player.getName() + ": " + e.getMessage());
             e.printStackTrace();
-            return List.of();
+            return new AdminModeRemoval(null, List.of());
         }
     }
 
@@ -464,8 +466,8 @@ public class SessionManager {
         return new AdminModeResult(true, List.copyOf(permissions));
     }
 
-    /** Removes the configured nodes and op; returns the configured entries that were present. */
-    private List<String> removeAdminMode(Player player, SessionData session) {
+    /** Removes the configured nodes and op; returns whether LuckPerms had the user and the entries that were present. */
+    private AdminModeRemoval removeAdminMode(Player player, SessionData session) {
         List<String> permissions = plugin.getPluginConfig().getTemporaryPermissions();
         UUID subjectId = player.getUniqueId();
         UUID sessionId = session.getSessionId();
@@ -473,7 +475,7 @@ public class SessionManager {
         if (user == null) {
             permissions.forEach(permission -> emitPermission(subjectId, sessionId, false,
                     ConfiguredNode.parse(permission), null, "not_attempted", "lp_user_not_loaded"));
-            return List.of();
+            return new AdminModeRemoval(false, List.of());
         }
 
         NodeMap nodeMap = user.getData(DataType.NORMAL);
@@ -496,7 +498,7 @@ public class SessionManager {
         audit().opRevoked(player, "session_end", wasOp, session.getSessionId());
 
         onSaved(plugin.getLuckPerms().getUserManager().saveUser(user), state -> rows.forEach(row -> row.accept(state)));
-        return removed;
+        return new AdminModeRemoval(true, List.copyOf(removed));
     }
 
     /**

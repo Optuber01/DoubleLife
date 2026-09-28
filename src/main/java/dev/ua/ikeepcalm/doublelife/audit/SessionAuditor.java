@@ -93,6 +93,7 @@ public final class SessionAuditor {
                 .put("activity_count", session.getActivities().size())
                 .put("restore_ok", details.restoreOk())
                 .put("perms_removed", String.join(",", details.permsRemoved()))
+                .put("lp_user_loaded", details.removal() == null ? null : details.removal().lpUserLoaded())
                 .put("deop_applied", details.deopApplied())
                 .put("risk_level", risk == null ? null : risk.getLevel().name())
                 .put("risk_score", risk == null ? null : risk.getScore())
@@ -286,8 +287,19 @@ public final class SessionAuditor {
     }
 
     /** Plain-value description of a finished session end, collected by SessionManager. */
-    public record ExitDetails(String reason, boolean restoreOk, List<String> permsRemoved,
+    public record ExitDetails(String reason, boolean restoreOk, AdminModeRemoval removal,
                               boolean deopApplied, Map<String, Object> before) {
+        /** Configured entries that were present and removed; empty outside TURBO. */
+        public List<String> permsRemoved() {
+            return removal == null ? List.of() : removal.removed();
+        }
+    }
+
+    /**
+     * Result of removing TURBO nodes: whether LuckPerms had the user loaded (null when the removal
+     * threw first), and the configured entries that were present.
+     */
+    public record AdminModeRemoval(Boolean lpUserLoaded, List<String> removed) {
     }
 
     /** {@code saveState} is saved, pending (save still running at shutdown), failed or lp_user_not_loaded. */
