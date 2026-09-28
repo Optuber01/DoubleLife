@@ -17,6 +17,14 @@ repositories {
         url = "https://repo.papermc.io/repository/maven-public/"
     }
     maven {
+        name = "incredibleplugins"
+        url = "https://repo.incredibleplugins.com/releases"
+        content {
+            includeGroupAndSubgroups("com.incredibleplugins") // Lands
+            includeGroupAndSubgroups("me.angeschossen")
+        }
+    }
+    maven {
         name = "sonatype"
         url = "https://oss.sonatype.org/content/groups/public/"
     }
@@ -24,6 +32,7 @@ repositories {
 
 dependencies {
     compileOnly 'net.luckperms:api:5.4'
+    compileOnly("com.incredibleplugins:lands-api:7.27.1")
     compileOnly("org.projectlombok:lombok:1.18.44")
     annotationProcessor("org.projectlombok:lombok:1.18.44")
     implementation("dev.triumphteam:triumph-gui-paper:3.1.13")

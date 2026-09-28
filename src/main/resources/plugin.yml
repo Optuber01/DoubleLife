@@ -8,6 +8,9 @@ description: Limited admin mode plugin with comprehensive activity logging
 depend:
   - LuckPerms
 
+softdepend:
+  - Lands
+
 permissions:
   doublelife.use:
     description: Allows toggling Double Life mode

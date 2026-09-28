@@ -4,6 +4,7 @@ import dev.rollczi.litecommands.LiteCommands;
 import dev.rollczi.litecommands.bukkit.LiteBukkitFactory;
 import dev.ua.ikeepcalm.doublelife.audit.ActivityAuditor;
 import dev.ua.ikeepcalm.doublelife.audit.AuditEmitter;
+import dev.ua.ikeepcalm.doublelife.audit.ClaimOwners;
 import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor;
 import dev.ua.ikeepcalm.doublelife.command.DoubleLifeCommand;
 import dev.ua.ikeepcalm.doublelife.config.PluginConfig;
@@ -60,7 +61,8 @@ public class DoubleLife extends JavaPlugin {
 
         this.auditEmitter = new AuditEmitter(this);
         this.sessionAuditor = new SessionAuditor(auditEmitter);
-        this.activityAuditor = new ActivityAuditor(auditEmitter, () -> pluginConfig.getSensitiveCommandPatterns());
+        this.activityAuditor = new ActivityAuditor(auditEmitter, () -> pluginConfig.getSensitiveCommandPatterns(),
+                new ClaimOwners(this));
 
         if (!setupLuckPerms()) {
             getLogger().severe(langConfig.getMessage("status.luckperms-not-found"));

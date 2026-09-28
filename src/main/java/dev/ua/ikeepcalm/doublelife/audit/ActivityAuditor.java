@@ -53,6 +53,7 @@ public final class ActivityAuditor {
     private final AuditEmitter emitter;
     private final Supplier<List<Pattern>> sensitivePatterns;
     private final ItemBatcher batcher;
+    private final ClaimOwners claimOwners;
     /** Dropped Item entity UUID to the session drop it came from, so pickups by others are attributed. */
     private final Map<UUID, ItemMove> trackedDrops = new LinkedHashMap<>(64, 0.75f, false) {
         @Override
@@ -67,8 +68,10 @@ public final class ActivityAuditor {
 
     /** The most recent command dispatched by a player or the console; matched to COMMAND gamemode changes. */
     private CommandSource lastCommand;
-    public ActivityAuditor(AuditEmitter emitter, Supplier<List<Pattern>> sensitivePatterns) {
+
+    public ActivityAuditor(AuditEmitter emitter, Supplier<List<Pattern>> sensitivePatterns, ClaimOwners claimOwners) {
         this.emitter = emitter;
+        this.claimOwners = claimOwners;
         this.sensitivePatterns = sensitivePatterns;
         this.batcher = new ItemBatcher(this::emitBatch);
     }
@@ -353,17 +356,43 @@ public final class ActivityAuditor {
 
     public void containerOpened(Player player, SessionData session, Inventory inventory) {
         InventoryHolder holder = inventory.getHolder(false);
-        Location location = inventory.getLocation() != null ? inventory.getLocation() : player.getLocation();
+        Location containerLocation = inventory.getLocation();
+        Location location = containerLocation != null ? containerLocation : player.getLocation();
+        UUID human = otherOwner(player, holder);
+        UUID claimOwner = claimOwner(player, inventory);
         emitter.emit(SessionAuditor.sessionRow(CONTAINER_OPENED, player, session)
                 .put("inventory_type", inventory.getType().name())
                 .put("holder_type", holder == null ? "none" : holder.getClass().getSimpleName())
                 .put("size", inventory.getSize())
-                .put("owner_uuid", otherOwner(player, holder))
+                .put("owner_uuid", human != null ? human : claimOwner)
+                .put("owner_source", human != null ? "player" : claimOwner != null ? "lands_claim" : null)
+                .putAll(claimOwners.describe(containerLocation, holder, player.getUniqueId()))
                 .putAll(AuditValues.location(location))
                 .build());
     }
 
     /** UUID of the human owning a PLAYER or ENDER_CHEST view when it is not the viewer (invsee, /ec other). */
+    /**
+     * Owner of the items in {@code inventory}: the other player for invsee and another player's
+     * ender chest, else the owner of the Lands claim a placed container stands in, when that is
+     * not the viewer. Null for the viewer's own inventories and unclaimed or virtual ones.
+     */
+    public UUID containerOwner(Player viewer, Inventory inventory) {
+        UUID human = otherOwner(viewer, inventory.getHolder(false));
+        return human != null ? human : claimOwner(viewer, inventory);
+    }
+
+    /** Claim owner for placed containers; never for player inventories or ender chests (their contents are personal). */
+    private UUID claimOwner(Player viewer, Inventory inventory) {
+        String type = inventory.getType().name();
+        if (type.equals("PLAYER") || type.equals("ENDER_CHEST")) {
+            return null;
+        }
+        ClaimOwners.Claim claim = claimOwners.claimAt(inventory.getLocation(), viewer.getUniqueId());
+        UUID owner = claim == null ? null : claim.ownerId();
+        return owner == null || owner.equals(viewer.getUniqueId()) ? null : owner;
+    }
+
     public static UUID otherOwner(Player viewer, InventoryHolder holder) {
         if (holder instanceof HumanEntity human && !human.getUniqueId().equals(viewer.getUniqueId())) {
             return human.getUniqueId();

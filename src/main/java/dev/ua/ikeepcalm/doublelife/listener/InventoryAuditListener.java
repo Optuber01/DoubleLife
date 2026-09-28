@@ -159,7 +159,7 @@ public class InventoryAuditListener implements Listener {
             this.player = player;
             this.session = session;
             this.type = top.getType().name();
-            this.owner = ActivityAuditor.otherOwner(player, top.getHolder(false));
+            this.owner = auditor().containerOwner(player, top);
             this.location = top.getLocation() != null ? top.getLocation().clone() : player.getLocation().clone();
         }
 
