@@ -299,14 +299,19 @@ public final class ActivityAuditor {
     /**
      * Gamemode change of a staff member or a session player; {@code session} may be null.
      * Actor: nobody for DoubleLife's own changes, the command issuer (matched in the same tick,
-     * empty for console and command blocks) for COMMAND, the player otherwise.
+     * empty for console and command blocks) for COMMAND and for PLUGIN changes made while a
+     * command is being dispatched (plugin commands such as EssentialsX /gm), the player otherwise.
      */
     public void gamemode(Player player, SessionData session, PlayerGameModeChangeEvent event) {
         GameMode from = player.getGameMode();
         String context = systemContext.get(player.getUniqueId());
         UUID sessionId = session == null ? null : session.getSessionId();
-        boolean byCommand = context == null && event.getCause() == PlayerGameModeChangeEvent.Cause.COMMAND;
-        CommandSource source = byCommand ? currentCommand() : null;
+        PlayerGameModeChangeEvent.Cause cause = event.getCause();
+        boolean vanillaCommand = context == null && cause == PlayerGameModeChangeEvent.Cause.COMMAND;
+        CommandSource pluginSource = context == null && cause == PlayerGameModeChangeEvent.Cause.PLUGIN
+                ? currentCommand() : null;
+        boolean byCommand = vanillaCommand || pluginSource != null;
+        CommandSource source = vanillaCommand ? currentCommand() : pluginSource;
         UUID actor = context != null ? null : byCommand ? (source == null ? null : source.sourceId()) : player.getUniqueId();
         emitter.emit(AuditEmitter.row(GAMEMODE)
                 .risk(event.getNewGameMode() == GameMode.CREATIVE ? AuditRisk.HIGH : AuditRisk.NORMAL)
