@@ -44,6 +44,7 @@ public class DoubleLife extends JavaPlugin {
     private AuditEmitter auditEmitter;
     private SessionAuditor sessionAuditor;
     private ActivityAuditor activityAuditor;
+    private ActivityListener activityListener;
 
     @Override
     public void onEnable() {
@@ -133,7 +134,7 @@ public class DoubleLife extends JavaPlugin {
     }
 
     private void registerListeners() {
-        getServer().getPluginManager().registerEvents(new ActivityListener(this), this);
+        getServer().getPluginManager().registerEvents(activityListener = new ActivityListener(this), this);
         getServer().getPluginManager().registerEvents(new CommandInterceptor(this), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(this), this);
         getServer().getPluginManager().registerEvents(new AuditListener(this), this);

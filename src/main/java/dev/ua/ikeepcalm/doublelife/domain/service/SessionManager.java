@@ -146,6 +146,9 @@ public class SessionManager {
     /** Ends a session already removed from the active map; returns whether the snapshot was restored. */
     private boolean finishSession(Player player, SessionData session, String reason) {
         session.end();
+        if (plugin.getActivityListener() != null) {
+            plugin.getActivityListener().flushBlocks(player.getUniqueId(), session);
+        }
         plugin.getActivityAuditor().flushSession(session);
         Map<String, Object> before = audit().captureBeforeRestore(player);
         boolean restoreOk = restorePlayerState(player, session);
