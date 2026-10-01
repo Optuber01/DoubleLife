@@ -37,6 +37,9 @@ public final class CommandNames {
     public record Parsed(String rawLabel, String label, Set<String> names, List<String> args) {
 
         public boolean matchesAny(List<String> candidates) {
+            if (candidates == null) {
+                return false;
+            }
             for (String candidate : candidates) {
                 if (candidate != null && names.contains(stripNamespace(candidate.toLowerCase(Locale.ROOT)))) {
                     return true;
