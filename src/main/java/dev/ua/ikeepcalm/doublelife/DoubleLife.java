@@ -75,8 +75,8 @@ public class DoubleLife extends JavaPlugin {
     public void onDisable() {
         if (sessionManager != null) {
             try {
-                sessionManager.saveSessionsOnShutdown();
-                sessionManager.endAllSessions();
+                // Ends every session synchronously, then saves only sessions that could not be restored.
+                sessionManager.shutdown();
             } catch (Exception e) {
                 getLogger().severe("Error during session cleanup: " + e.getMessage());
             }
