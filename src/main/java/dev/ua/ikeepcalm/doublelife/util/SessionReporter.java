@@ -7,6 +7,8 @@ import dev.ua.ikeepcalm.doublelife.domain.model.source.RiskLevel;
 import dev.ua.ikeepcalm.doublelife.domain.service.RiskAnalyzer;
 import org.bukkit.Bukkit;
 
+import java.util.function.Consumer;
+
 /**
  * Orchestrates the end-of-session reporting pipeline:
  * 1. Write the local log file.
@@ -26,10 +28,14 @@ public class SessionReporter {
         this.riskAnalyzer = new RiskAnalyzer(plugin);
     }
 
+    public void report(SessionData session, String playerName) {
+        report(session, playerName, scored -> { });
+    }
+
     /**
      * Entry point called from SessionManager.endSession (main thread is fine — async tasks are spawned internally).
      */
-    public void report(SessionData session, String playerName) {
+    public void report(SessionData session, String playerName, Consumer<RiskAssessment> scored) {
         // Write the file-based log synchronously (fast, local I/O)
         LogWriter logWriter = new LogWriter(plugin, session);
         logWriter.writeLog();
@@ -39,6 +45,7 @@ public class SessionReporter {
             // the remaining sessions. Score here and log a flagged session; Discord and AI are skipped.
             try {
                 RiskAssessment assessment = riskAnalyzer.analyze(session);
+                scored.accept(assessment);
                 if (isFlagged(assessment)) {
                     logFlagged(playerName, assessment);
                 }
@@ -52,6 +59,7 @@ public class SessionReporter {
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
                 RiskAssessment assessment = riskAnalyzer.analyze(session);
+                scored.accept(assessment);
 
                 if (isFlagged(assessment)) {
                     // Flagged path — optionally call Gemini first

@@ -2,10 +2,15 @@ package dev.ua.ikeepcalm.doublelife;
 
 import dev.rollczi.litecommands.LiteCommands;
 import dev.rollczi.litecommands.bukkit.LiteBukkitFactory;
+import dev.ua.ikeepcalm.doublelife.audit.ActivityAuditor;
+import dev.ua.ikeepcalm.doublelife.audit.AuditEmitter;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor;
 import dev.ua.ikeepcalm.doublelife.command.DoubleLifeCommand;
 import dev.ua.ikeepcalm.doublelife.config.PluginConfig;
 import dev.ua.ikeepcalm.doublelife.domain.service.SessionManager;
 import dev.ua.ikeepcalm.doublelife.listener.ActivityListener;
+import dev.ua.ikeepcalm.doublelife.listener.AuditListener;
+import dev.ua.ikeepcalm.doublelife.listener.InventoryAuditListener;
 import dev.ua.ikeepcalm.doublelife.listener.CommandInterceptor;
 import dev.ua.ikeepcalm.doublelife.listener.PlayerJoinListener;
 import dev.ua.ikeepcalm.doublelife.config.LangConfig;
@@ -36,6 +41,9 @@ public class DoubleLife extends JavaPlugin {
     private SessionReporter sessionReporter;
     private OpGuardService opGuardService;
     private LiteCommands<CommandSender> liteCommands;
+    private AuditEmitter auditEmitter;
+    private SessionAuditor sessionAuditor;
+    private ActivityAuditor activityAuditor;
     private ActivityListener activityListener;
 
     @Override
@@ -49,6 +57,10 @@ public class DoubleLife extends JavaPlugin {
         saveDefaultConfig();
         this.pluginConfig = new PluginConfig(this);
         this.langConfig = new LangConfig(this);
+
+        this.auditEmitter = new AuditEmitter(this);
+        this.sessionAuditor = new SessionAuditor(auditEmitter);
+        this.activityAuditor = new ActivityAuditor(auditEmitter, () -> pluginConfig.getSensitiveCommandPatterns());
 
         if (!setupLuckPerms()) {
             getLogger().severe(langConfig.getMessage("status.luckperms-not-found"));
@@ -68,6 +80,8 @@ public class DoubleLife extends JavaPlugin {
         // Sweep for unauthorised operators every 20 ticks
         getServer().getScheduler().runTaskTimer(this,
                 () -> opGuardService.checkAllOnlinePlayers(), 20L, 20L);
+        // Async: the batcher is synchronized and its rows are emitted off the main thread.
+        getServer().getScheduler().runTaskTimerAsynchronously(this, () -> activityAuditor.flushStale(), 100L, 100L);
 
         getLogger().info(langConfig.getMessage("console.plugin-enabled"));
     }
@@ -96,6 +110,10 @@ public class DoubleLife extends JavaPlugin {
         } else {
             getLogger().info("DoubleLife plugin disabled.");
         }
+
+        if (auditEmitter != null) {
+            auditEmitter.close();
+        }
     }
 
     private boolean setupLuckPerms() {
@@ -117,6 +135,8 @@ public class DoubleLife extends JavaPlugin {
         getServer().getPluginManager().registerEvents(activityListener = new ActivityListener(this), this);
         getServer().getPluginManager().registerEvents(new CommandInterceptor(this), this);
         getServer().getPluginManager().registerEvents(new PlayerJoinListener(this), this);
+        getServer().getPluginManager().registerEvents(new AuditListener(this), this);
+        getServer().getPluginManager().registerEvents(new InventoryAuditListener(this), this);
     }
 
     public void reload() {

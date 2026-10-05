@@ -27,10 +27,11 @@ public final class CommandNames {
     }
 
     /**
+     * @param label the typed label, lower-cased, namespace stripped (for example {@code tp})
      * @param names every name the typed label resolves to: the label and the command's name and aliases
      * @param args  the arguments after the label
      */
-    public record Parsed(Set<String> names, List<String> args) {
+    public record Parsed(String label, Set<String> names, List<String> args) {
 
         public boolean matchesAny(List<String> candidates) {
             for (String candidate : candidates) {
@@ -52,13 +53,29 @@ public final class CommandNames {
 
     /** Parses a {@code PlayerCommandPreprocessEvent} message. */
     public static Parsed parse(String message) {
+        return parse(message, true);
+    }
+
+    /** Like {@link #parse} but reads no command map: {@code names} holds only the typed label. */
+    public static Parsed typed(String message) {
+        return parse(message, false);
+    }
+
+    /** The typed label of a message, lower-cased and namespace stripped. Reads no command map. */
+    public static String label(String message) {
+        return typed(message).label();
+    }
+
+    private static Parsed parse(String message, boolean resolve) {
         String text = message.trim();
         if (text.startsWith("/")) {
             text = text.substring(1);
         }
         String[] parts = text.split("\\s+");
         String rawLabel = parts[0].toLowerCase(Locale.ROOT);
-        return new Parsed(resolveNames(rawLabel), Arrays.asList(parts).subList(1, parts.length));
+        String label = stripNamespace(rawLabel);
+        Set<String> names = resolve ? resolveNames(rawLabel) : label.isEmpty() ? Set.of() : Set.of(label);
+        return new Parsed(label, names, Arrays.asList(parts).subList(1, parts.length));
     }
 
     private static Set<String> resolveNames(String rawLabel) {

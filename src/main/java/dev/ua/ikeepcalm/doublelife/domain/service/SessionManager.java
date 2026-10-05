@@ -1,6 +1,11 @@
 package dev.ua.ikeepcalm.doublelife.domain.service;
 
 import dev.ua.ikeepcalm.doublelife.DoubleLife;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.AdminModeRemoval;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.AdminModeResult;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.ExitDetails;
+import dev.ua.ikeepcalm.doublelife.audit.SessionAuditor.PermissionChange;
 import dev.ua.ikeepcalm.doublelife.domain.model.source.DoubleLifeMode;
 import dev.ua.ikeepcalm.doublelife.domain.model.SessionData;
 import dev.ua.ikeepcalm.doublelife.domain.model.PlayerState;
@@ -23,8 +28,11 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 public class SessionManager {
@@ -42,6 +50,8 @@ public class SessionManager {
     private final Map<SessionData, Player> unsavedRestores = new IdentityHashMap<>();
     // Files that failed to load; never overwritten
     private final Set<File> unreadableFiles = new HashSet<>();
+    /** Set while the plugin is disabling: LuckPerms saves are awaited and no async tasks are scheduled. */
+    private volatile boolean shuttingDown = false;
 
     private static final String SESSIONS_FOLDER = "sessions";
     // Written over a restored session's file that could not be deleted
@@ -50,6 +60,10 @@ public class SessionManager {
     public SessionManager(DoubleLife plugin) {
         this.plugin = plugin;
         loadPendingSessionsFromFile();
+    }
+
+    private SessionAuditor audit() {
+        return plugin.getSessionAuditor();
     }
 
     public boolean canStartSession(Player player) {
@@ -86,6 +100,11 @@ public class SessionManager {
     }
 
     public void startSession(Player player, DoubleLifeMode mode) {
+        startSession(player, mode, "command");
+    }
+
+    /** {@code trigger} (command or gui) is recorded on the entered audit row. */
+    public void startSession(Player player, DoubleLifeMode mode, String trigger) {
         if (!canStartSession(player, mode)) {
             return;
         }
@@ -96,10 +115,11 @@ public class SessionManager {
 
         // Clear inventory and execute entry commands for both modes
         player.getInventory().clear();
-        executeEntryCommands(player);
+        executeEntryCommands(player, session);
 
+        AdminModeResult grant = null;
         if (mode == DoubleLifeMode.TURBO) {
-            applyAdminMode(player);
+            grant = applyAdminMode(player, session);
             // Send immediate Discord notification for turbo mode activation
             plugin.getWebhookUtil().sendTurboModeActivation(player.getName());
         }
@@ -110,6 +130,8 @@ public class SessionManager {
         String modeMessage = mode == DoubleLifeMode.TURBO ? "session.turbo-start-success" : "session.default-start-success";
         player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage(modeMessage, player)));
         plugin.getLogger().info(plugin.getLangConfig().getMessage("log.session-started", player.getName(), mode.getDisplayName()));
+        audit().entered(player, session, trigger, plugin.getPluginConfig().getMaxDuration(),
+                plugin.getPluginConfig().getEntryCommands(), grant);
     }
 
     public void startSession(Player player) {
@@ -117,29 +139,36 @@ public class SessionManager {
     }
 
     public void endSession(Player player) {
+        endSession(player, "manual");
+    }
+
+    /** {@code reason} is manual, gui, expired, quit, shutdown or restore_retry. */
+    public void endSession(Player player, String reason) {
         SessionData session = activeSessions.remove(player.getUniqueId());
         if (session != null) {
-            endOrKeepPending(player, session);
+            endOrKeepPending(player, session, reason);
         }
     }
 
     // If ending throws, still remove the timer, boss bar and TURBO nodes so a pending session keeps no privileges
-    private void endOrKeepPending(Player player, SessionData session) {
+    private void endOrKeepPending(Player player, SessionData session, String reason) {
         try {
-            finishSession(player, session);
+            finishSession(player, session, reason);
         } catch (RuntimeException e) {
             plugin.getLogger().severe("Failed to end session for " + player.getName() + ": " + e.getMessage());
             e.printStackTrace();
             stopTimerAndBossBar(player);
+            AdminModeRemoval removal = null;
             if (session.getMode() == DoubleLifeMode.TURBO) {
-                removeAdminModeSafely(player);
+                removal = removeAdminModeSafely(player, session);
             }
+            audit().exitFailed(player, session, reason, e, removal);
         }
     }
 
     // The session stays pending, ended so it is never resumed, until its snapshot is restored and saved.
     // A retry only restores again: the end time, report and cooldown are set once.
-    private void finishSession(Player player, SessionData session) {
+    private void finishSession(Player player, SessionData session, String reason) {
         boolean firstEnd = session.isActive();
         if (firstEnd) {
             session.end();
@@ -148,19 +177,24 @@ public class SessionManager {
             pendingSessions.add(session);
         }
         plugin.getActivityListener().flushBlocks(player.getUniqueId(), session);
+        plugin.getActivityAuditor().flushSession(session);
+        // The exit row is written once, so a retry does not read the state for it
+        Map<String, Object> before = firstEnd ? audit().captureBeforeRestore(player) : Map.of();
         boolean restoreOk = restorePlayerState(player, session);
         if (restoreOk) {
             settleSession(session);
         }
 
+        AdminModeRemoval removal = null;
         if (session.getMode() == DoubleLifeMode.TURBO) {
-            removeAdminModeSafely(player);
+            removal = removeAdminModeSafely(player, session);
         }
 
         stopTimerAndBossBar(player);
 
         if (firstEnd) {
-            plugin.getSessionReporter().report(session, player.getName());
+            // Scoring runs on the reporter's async path; its audit row follows when it completes.
+            plugin.getSessionReporter().report(session, player.getName(), risk -> audit().riskScored(session, risk));
 
             long cooldownDuration = plugin.getPluginConfig().getCooldownDuration() * 1000L;
             cooldowns.put(player.getUniqueId(), System.currentTimeMillis() + cooldownDuration);
@@ -173,6 +207,9 @@ public class SessionManager {
             plugin.getLogger().warning("Session for " + player.getName() + " ended without restoring its snapshot; kept pending for a retry");
         }
         plugin.getLogger().info(plugin.getLangConfig().getMessage("log.session-ended", player.getName()));
+        if (firstEnd) {
+            audit().exited(player, session, new ExitDetails(reason, restoreOk, removal, before));
+        }
     }
 
     private void stopTimerAndBossBar(Player player) {
@@ -234,22 +271,30 @@ public class SessionManager {
         }
     }
 
-    private void removeAdminModeSafely(Player player) {
+    private AdminModeRemoval removeAdminModeSafely(Player player, SessionData session) {
         try {
-            removeAdminMode(player);
+            return removeAdminMode(player, session);
         } catch (RuntimeException e) {
             plugin.getLogger().severe("Failed to remove admin mode for " + player.getName() + ": " + e.getMessage());
             e.printStackTrace();
+            return new AdminModeRemoval(null);
         }
     }
 
     public void handleQuit(Player player) {
         retryUnsavedRestores(player);
-        endSession(player);
+        SessionData session = activeSessions.get(player.getUniqueId());
+        if (session == null) {
+            return;
+        }
+        long totalAllowed = session.getTotalAllowedMinutes(plugin.getPluginConfig().getMaxDuration());
+        audit().quitDuringSession(player, session, Math.max(0, totalAllowed - session.getDuration().toMinutes()));
+        endSession(player, "quit");
     }
 
     public void shutdown() {
-        endAllSessions();
+        shuttingDown = true;
+        endAllSessions("shutdown");
         for (Player player : List.copyOf(unsavedRestores.values())) {
             if (player.isOnline()) {
                 retryUnsavedRestores(player);
@@ -257,14 +302,19 @@ public class SessionManager {
         }
         retryRestoredFileCleanup();
         saveSessionsOnShutdown();
+        plugin.getActivityAuditor().flushAll();
     }
 
     public void endAllSessions() {
+        endAllSessions("shutdown");
+    }
+
+    public void endAllSessions(String reason) {
         Set<UUID> sessionIds = new HashSet<>(activeSessions.keySet());
         for (UUID playerId : sessionIds) {
             Player player = Bukkit.getPlayer(playerId);
             if (player != null) {
-                endSession(player);
+                endSession(player, reason);
             }
         }
     }
@@ -433,31 +483,35 @@ public class SessionManager {
             return;
         }
 
+        long elapsedMinutes = sessionToRestore.getDuration().toMinutes();
+        List<String> reapplied = List.of();
         try {
             if (hasActiveSession(player)) {
                 plugin.getLogger().warning("Player " + player.getName() + " already has an active session, keeping the saved session pending");
+                audit().resumed(player, sessionToRestore, "skipped_active", List.of(), elapsedMinutes);
                 return;
             }
 
             if (!sessionToRestore.isActive()) {
                 plugin.getLogger().info("Retrying the restore of an ended session for " + player.getName());
-                endOrKeepPending(player, sessionToRestore);
+                endOrKeepPending(player, sessionToRestore, "restore_retry");
                 return;
             }
 
             long baseDuration = plugin.getPluginConfig().getMaxDuration();
             long totalAllowedMinutes = sessionToRestore.getTotalAllowedMinutes(baseDuration);
-            if (sessionToRestore.getDuration().toMinutes() >= totalAllowedMinutes) {
+            if (elapsedMinutes >= totalAllowedMinutes) {
                 plugin.getLogger().info("Session for " + player.getName() + " has expired, restoring saved state");
                 player.sendMessage(ComponentUtil.warning(plugin.getLangConfig().getMessage("session.expired-during-restart", player)));
-                endOrKeepPending(player, sessionToRestore);
+                audit().resumed(player, sessionToRestore, "expired", List.of(), elapsedMinutes);
+                endOrKeepPending(player, sessionToRestore, "expired");
                 return;
             }
 
             activeSessions.put(playerId, sessionToRestore);
 
             if (sessionToRestore.getMode() == DoubleLifeMode.TURBO) {
-                applyAdminMode(player);
+                reapplied = applyAdminMode(player, sessionToRestore).nodes();
             }
 
             startTimer(player, sessionToRestore);
@@ -466,13 +520,15 @@ public class SessionManager {
             player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage("session.restored-after-restart", player)));
 
             plugin.getLogger().info("Restored " + sessionToRestore.getMode().getDisplayName() + " session for " + player.getName());
+            audit().resumed(player, sessionToRestore, "resumed", reapplied, elapsedMinutes);
 
             pendingSessions.remove(sessionToRestore);
         } catch (Exception e) {
             plugin.getLogger().warning("Failed to restore session for player " + player.getName() + ": " + e.getMessage());
+            audit().resumed(player, sessionToRestore, "failed", List.of(), elapsedMinutes);
             // Partly resumed: ending it undoes what was applied and restores the snapshot
             if (activeSessions.remove(playerId, sessionToRestore)) {
-                endOrKeepPending(player, sessionToRestore);
+                endOrKeepPending(player, sessionToRestore, "restore_retry");
             }
         }
     }
@@ -491,39 +547,56 @@ public class SessionManager {
         }
     }
 
-    private void applyAdminMode(Player player) {
+    private AdminModeResult applyAdminMode(Player player, SessionData session) {
         plugin.getLogger().info("Applying admin mode for " + player.getName());
+        UUID subjectId = player.getUniqueId();
+        UUID sessionId = session.getSessionId();
+        List<String> permissions = plugin.getPluginConfig().getTemporaryPermissions();
+        Duration lifetime = Duration.ofMinutes(plugin.getPluginConfig().getMaxDuration());
+        String expiry = Instant.now().plus(lifetime).toString();
         User user = plugin.getLuckPerms().getUserManager().getUser(player.getUniqueId());
         if (user == null) {
             plugin.getLogger().info("User was not found in LuckPerms, withdrawing...");
-            return;
+            permissions.forEach(permission -> emitPermission(subjectId, sessionId, true,
+                    ConfiguredNode.parse(permission), expiry, "not_attempted", "lp_user_not_loaded"));
+            return new AdminModeResult(false, List.of());
         }
 
-        List<String> permissions = plugin.getPluginConfig().getTemporaryPermissions();
-
+        List<Consumer<String>> rows = new ArrayList<>();
         for (String permission : permissions) {
             ConfiguredNode configured = ConfiguredNode.parse(permission);
             Node node = PermissionNode.builder(configured.key())
                     .value(configured.value())
-                    .expiry(Duration.ofMinutes(plugin.getPluginConfig().getMaxDuration()))
+                    .expiry(lifetime)
                     .build();
-            user.data().add(node);
+            DataMutateResult result = user.data().add(node);
+            rows.add(state -> emitPermission(subjectId, sessionId, true, configured, expiry, result.name(), state));
             plugin.getLogger().info("Adding permission " + permission + " to " + player.getName());
         }
 
-        plugin.getLuckPerms().getUserManager().saveUser(user);
+        onSaved(plugin.getLuckPerms().getUserManager().saveUser(user), state -> rows.forEach(row -> row.accept(state)));
         plugin.getLogger().info("Saved nodes!");
+        return new AdminModeResult(true, List.copyOf(permissions));
     }
 
-    private void removeAdminMode(Player player) {
-        User user = plugin.getLuckPerms().getUserManager().getUser(player.getUniqueId());
-        if (user == null) return;
-
+    private AdminModeRemoval removeAdminMode(Player player, SessionData session) {
         List<String> permissions = plugin.getPluginConfig().getTemporaryPermissions();
+        UUID subjectId = player.getUniqueId();
+        UUID sessionId = session.getSessionId();
+        User user = plugin.getLuckPerms().getUserManager().getUser(player.getUniqueId());
+        if (user == null) {
+            permissions.forEach(permission -> emitPermission(subjectId, sessionId, false,
+                    ConfiguredNode.parse(permission), null, "not_attempted", "lp_user_not_loaded"));
+            return new AdminModeRemoval(false);
+        }
+
         NodeMap nodeMap = user.getData(DataType.NORMAL);
+        List<Consumer<String>> rows = new ArrayList<>();
 
         for (String permission : permissions) {
-            clearNodes(user, ConfiguredNode.parse(permission));
+            ConfiguredNode configured = ConfiguredNode.parse(permission);
+            clearNodes(user, configured);
+            rows.add(state -> emitPermission(subjectId, sessionId, false, configured, null, "cleared", state));
 
             if (nodeMap.remove(Node.builder(permission).build()) == DataMutateResult.SUCCESS) {
                 plugin.getLogger().info(plugin.getLangConfig().getMessage("permissions.removed") + ": " + permission + " for " + player.getName());
@@ -531,14 +604,42 @@ public class SessionManager {
         }
 
         player.setOp(false);
+        // Whether the player was op is not read: that would be a lookup only the row uses.
+        audit().opRevoked(player, "session_end", null, session.getSessionId());
 
-        plugin.getLuckPerms().getUserManager().saveUser(user);
+        onSaved(plugin.getLuckPerms().getUserManager().saveUser(user), state -> rows.forEach(row -> row.accept(state)));
+        return new AdminModeRemoval(true);
     }
 
     // For a negation also clears the temporary key=false node added on entry, never a permanent grant of key
     private static void clearNodes(User user, ConfiguredNode configured) {
         user.data().clear(n -> n.getKey().equals(configured.configured())
                 || !configured.value() && n.getKey().equals(configured.key()) && !n.getValue() && n.hasExpiry());
+    }
+
+    /** Plain values only: may run on a LuckPerms thread. */
+    private void emitPermission(UUID subjectId, UUID sessionId, boolean grant, ConfiguredNode node,
+                                String expiry, String lpResult, String saveState) {
+        audit().permissionChanged(new PermissionChange(subjectId, sessionId, grant,
+                node.key(), node.value(), expiry, lpResult, saveState));
+    }
+
+    /**
+     * Reports the LuckPerms save outcome as saved, failed or pending. During shutdown the main
+     * thread never waits: an already finished save reports its result, otherwise the row says
+     * pending because the audit client closes right after. Otherwise the callback runs on the
+     * LuckPerms thread with plain captured values only.
+     */
+    private void onSaved(CompletableFuture<Void> save, Consumer<String> report) {
+        if (!shuttingDown) {
+            save.whenComplete((ignored, failure) -> report.accept(failure == null ? "saved" : "failed"));
+            return;
+        }
+        if (!save.isDone()) {
+            report.accept("pending");
+            return;
+        }
+        report.accept(save.isCompletedExceptionally() ? "failed" : "saved");
     }
 
     // Returns false instead of throwing so the rest of the cleanup always runs
@@ -551,7 +652,7 @@ public class SessionManager {
         }
         plugin.getLogger().info("Restoring player state for " + player.getName());
         try {
-            state.restore(player);
+            plugin.getActivityAuditor().withSystemContext(player, "session_restore", () -> state.restore(player));
         } catch (RuntimeException e) {
             plugin.getLogger().severe("Failed to restore player state for " + player.getName() + ": " + e.getMessage());
             e.printStackTrace();
@@ -585,7 +686,7 @@ public class SessionManager {
             long maxDuration = plugin.getPluginConfig().getMaxDuration();
             long totalAllowedMinutes = session.getTotalAllowedMinutes(maxDuration);
             if (session.getDuration().toMinutes() >= totalAllowedMinutes) {
-                endSession(player);
+                endSession(player, "expired");
             }
         }, 0L, 20L);
 
@@ -630,12 +731,15 @@ public class SessionManager {
         }
     }
 
-    private void executeEntryCommands(Player player) {
+    private void executeEntryCommands(Player player, SessionData session) {
         List<String> commands = plugin.getPluginConfig().getEntryCommands();
-        for (String command : commands) {
-            String processedCommand = command.replace("{player}", player.getName());
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), processedCommand);
-        }
+        plugin.getActivityAuditor().withSystemContext(player, "entry_command", () -> {
+            for (String command : commands) {
+                String processedCommand = command.replace("{player}", player.getName());
+                boolean dispatched = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), processedCommand);
+                audit().entryCommand(player, session, processedCommand, dispatched);
+            }
+        });
     }
 
     public boolean hasActiveSession(Player player) {
@@ -670,6 +774,7 @@ public class SessionManager {
         long newTotalAllowed = currentTotalAllowed + additionalMinutes;
 
         if (newTotalAllowed > baseDuration * 2) {
+            audit().extended(player, session, additionalMinutes, currentTotalAllowed, false);
             return false;
         }
 
@@ -682,6 +787,7 @@ public class SessionManager {
             plugin.getLangConfig().getMessage("session.extended-success", player, additionalMinutes)
         ));
         plugin.getLogger().info("Extended session for " + player.getName() + " by " + additionalMinutes + " minutes");
+        audit().extended(player, session, additionalMinutes, newTotalAllowed, true);
 
         return true;
     }
