@@ -151,6 +151,9 @@ public class SessionManager {
         if (!pendingSessions.contains(session)) {
             pendingSessions.add(session);
         }
+        if (plugin.getActivityListener() != null) {
+            plugin.getActivityListener().flushBlocks(player.getUniqueId(), session);
+        }
         boolean restoreOk = restorePlayerState(player, session);
         if (restoreOk) {
             settleSession(session);
