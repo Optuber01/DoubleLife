@@ -2,23 +2,21 @@ package dev.ua.ikeepcalm.doublelife.util;
 
 import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
-import org.bukkit.command.CommandMap;
 
 import java.util.Arrays;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Normalises a typed command so restriction checks cannot be bypassed with a
- * namespace prefix ({@code /minecraft:tp}, {@code /essentials:give}) or an alias.
- * Main thread only (reads the server command map).
+ * Resolves a typed command to every name it can be restricted under, so a namespace prefix
+ * ({@code /minecraft:tp}) or an alias cannot bypass a restriction. Main thread only.
  */
 public final class CommandNames {
 
-    /** Vanilla Brigadier redirects that the Bukkit command map exposes as unrelated commands. */
+    // Vanilla redirects that the Bukkit command map exposes as unrelated commands
     private static final Map<String, String> VANILLA_REDIRECTS = Map.of(
             "teleport", "tp",
             "tp", "teleport",
@@ -29,18 +27,14 @@ public final class CommandNames {
     }
 
     /**
-     * @param names every name the typed label resolves to: the label, the resolved command's
-     *              name and label, and all of its aliases, lower-cased and namespace-stripped
+     * @param names every name the typed label resolves to: the label and the command's name and aliases
      * @param args  the arguments after the label
      */
     public record Parsed(Set<String> names, List<String> args) {
 
         public boolean matchesAny(List<String> candidates) {
-            if (candidates == null) {
-                return false;
-            }
             for (String candidate : candidates) {
-                if (candidate != null && names.contains(stripNamespace(candidate.toLowerCase(Locale.ROOT)))) {
+                if (names.contains(normalize(candidate))) {
                     return true;
                 }
             }
@@ -56,33 +50,33 @@ public final class CommandNames {
         }
     }
 
-    /** Parses a {@code PlayerCommandPreprocessEvent} message (with or without the leading slash). */
+    /** Parses a {@code PlayerCommandPreprocessEvent} message. */
     public static Parsed parse(String message) {
-        String text = message == null ? "" : message.trim();
+        String text = message.trim();
         if (text.startsWith("/")) {
             text = text.substring(1);
         }
         String[] parts = text.split("\\s+");
-        String rawLabel = parts.length == 0 ? "" : parts[0].toLowerCase(Locale.ROOT);
-        String label = stripNamespace(rawLabel);
-        List<String> args = parts.length <= 1 ? List.of() : Arrays.asList(parts).subList(1, parts.length);
-        return new Parsed(resolveNames(rawLabel, label), List.copyOf(args));
+        String rawLabel = parts[0].toLowerCase(Locale.ROOT);
+        return new Parsed(resolveNames(rawLabel), Arrays.asList(parts).subList(1, parts.length));
     }
 
-    private static Set<String> resolveNames(String rawLabel, String label) {
-        Set<String> names = new LinkedHashSet<>();
-        names.add(label);
-        Command command = lookup(rawLabel);
-        if (command == null && !rawLabel.equals(label)) {
-            command = lookup(label);
+    private static Set<String> resolveNames(String rawLabel) {
+        Set<String> names = new HashSet<>();
+        names.add(stripNamespace(rawLabel));
+
+        Command command = Bukkit.getCommandMap().getCommand(rawLabel);
+        if (command == null) {
+            command = Bukkit.getCommandMap().getCommand(stripNamespace(rawLabel));
         }
         if (command != null) {
-            names.add(stripNamespace(command.getName().toLowerCase(Locale.ROOT)));
-            names.add(stripNamespace(command.getLabel().toLowerCase(Locale.ROOT)));
+            names.add(normalize(command.getName()));
+            names.add(normalize(command.getLabel()));
             for (String alias : command.getAliases()) {
-                names.add(stripNamespace(alias.toLowerCase(Locale.ROOT)));
+                names.add(normalize(alias));
             }
         }
+
         for (String name : Set.copyOf(names)) {
             String redirect = VANILLA_REDIRECTS.get(name);
             if (redirect != null) {
@@ -93,19 +87,11 @@ public final class CommandNames {
         return Set.copyOf(names);
     }
 
-    private static Command lookup(String label) {
-        if (label.isEmpty()) {
-            return null;
-        }
-        try {
-            CommandMap map = Bukkit.getCommandMap();
-            return map.getCommand(label);
-        } catch (RuntimeException unavailable) {
-            return null;
-        }
+    private static String normalize(String label) {
+        return stripNamespace(label.toLowerCase(Locale.ROOT));
     }
 
-    static String stripNamespace(String label) {
+    private static String stripNamespace(String label) {
         int colon = label.indexOf(':');
         return colon >= 0 && colon < label.length() - 1 ? label.substring(colon + 1) : label;
     }

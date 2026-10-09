@@ -22,7 +22,6 @@ public class PlayerJoinListener implements Listener {
 
         // Check op whitelist on join (delayed so the player object is fully initialised)
         plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            // A player who left within the delay keeps their pending session for the next join.
             if (!player.isOnline()) {
                 return;
             }
@@ -31,11 +30,7 @@ public class PlayerJoinListener implements Listener {
         }, 20L);
     }
 
-    /**
-     * Ends an active session before the server saves the player, so the saved playerdata holds
-     * the restored snapshot and the LuckPerms session nodes are removed while the user is loaded.
-     * LOWEST so it runs before other plugins snapshot the inventory on quit.
-     */
+    // LOWEST: ends the session before the server saves the player and before other plugins read the inventory
     @EventHandler(priority = EventPriority.LOWEST)
     public void onPlayerQuitDuringSession(PlayerQuitEvent event) {
         plugin.getSessionManager().handleQuit(event.getPlayer());

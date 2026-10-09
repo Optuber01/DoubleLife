@@ -19,13 +19,11 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 public class SessionManager {
@@ -35,17 +33,17 @@ public class SessionManager {
     private final Map<UUID, Long> cooldowns = new ConcurrentHashMap<>();
     private final Map<UUID, BukkitTask> sessionTimers = new ConcurrentHashMap<>();
     private final Map<UUID, BossBar> bossBars = new ConcurrentHashMap<>();
-    /** Sessions whose snapshot is not restored yet: loaded ones to resume, and ended ones whose restore failed. */
+    // Loaded sessions to resume, and ended sessions whose snapshot is not restored yet
     private List<SessionData> pendingSessions = new ArrayList<>();
-    /** Loaded session files by session; each stays tracked until that session is restored and its file removed. */
+    // Loaded session files; tracked until the session is restored and its file removed
     private final Map<SessionData, SessionFile> sessionFiles = new IdentityHashMap<>();
-    /** Session to the player its snapshot was applied to when the playerdata save failed; only the save is retried. */
+    // Snapshot applied but the playerdata save failed; only the save is retried
     private final Map<SessionData, Player> unsavedRestores = new IdentityHashMap<>();
-    /** Session files that could not be loaded; kept for staff and never overwritten, loading is retried next start. */
+    // Files that failed to load; never overwritten
     private final Set<File> unreadableFiles = new HashSet<>();
 
     private static final String SESSIONS_FOLDER = "sessions";
-    /** Key of the marker written over a restored session's file that could not be deleted. */
+    // Written over a restored session's file that could not be deleted
     private static final String RESTORED_KEY = "restoredSession";
 
     public SessionManager(DoubleLife plugin) {
@@ -59,8 +57,7 @@ public class SessionManager {
 
     public boolean canStartSession(Player player, DoubleLifeMode mode) {
         retryRestoredFileCleanup();
-        // A pending session holds the player's original state and a restored file not yet removed could replay;
-        // a new session would snapshot the session state or leave two files.
+        // A new session would snapshot the previous session's state while that one is still unrestored
         if (hasActiveSession(player) || hasUnsettledSession(player.getUniqueId())) {
             return false;
         }
@@ -125,10 +122,7 @@ public class SessionManager {
         }
     }
 
-    /**
-     * Ends the session (see {@link #finishSession}). If ending throws, the timer, boss bar and TURBO
-     * nodes are removed here, so a session left pending never keeps its privileges.
-     */
+    // If ending throws, still remove the timer, boss bar and TURBO nodes so a pending session keeps no privileges
     private void endOrKeepPending(Player player, SessionData session) {
         try {
             finishSession(player, session);
@@ -142,18 +136,13 @@ public class SessionManager {
         }
     }
 
-    /**
-     * Ends a session already removed from the active map. It stays pending, ended so it is never
-     * resumed, until its snapshot is restored and saved to playerdata; the next join retries the restore.
-     */
+    // The session stays pending, ended so it is never resumed, until its snapshot is restored and saved
     private void finishSession(Player player, SessionData session) {
         session.end();
         if (!pendingSessions.contains(session)) {
             pendingSessions.add(session);
         }
-        if (plugin.getActivityListener() != null) {
-            plugin.getActivityListener().flushBlocks(player.getUniqueId(), session);
-        }
+        plugin.getActivityListener().flushBlocks(player.getUniqueId(), session);
         boolean restoreOk = restorePlayerState(player, session);
         if (restoreOk) {
             settleSession(session);
@@ -191,7 +180,6 @@ public class SessionManager {
         }
     }
 
-    /** The snapshot is restored and saved: the session is never restored again and its file is removed. */
     private void settleSession(SessionData session) {
         pendingSessions.remove(session);
         unsavedRestores.remove(session);
@@ -202,17 +190,13 @@ public class SessionManager {
         if (removeSessionFile(loaded.file())) {
             sessionFiles.remove(session);
         } else {
-            // Still tracked, so the player cannot start a session; removal is retried, the restore never is.
-            sessionFiles.put(session, loaded.asRestored());
+            sessionFiles.put(session, new SessionFile(loaded.file(), true));
             plugin.getLogger().severe("Failed to delete or mark restored session file " + loaded.file().getName()
                 + "; retrying, but if it remains at the next start it restores an old snapshot");
         }
     }
 
-    /**
-     * Deletes a restored session's file. If that fails, overwrites it with a marker that loading
-     * discards, so it cannot restore an old snapshot after a restart. False if both fail.
-     */
+    // If the file cannot be deleted, a marker that loading discards stops it restoring an old snapshot
     private boolean removeSessionFile(File file) {
         if (!file.exists() || file.delete()) {
             return true;
@@ -226,15 +210,11 @@ public class SessionManager {
         }
     }
 
-    /** Retries removing the files of restored sessions; their snapshot is never restored again. */
     private void retryRestoredFileCleanup() {
         sessionFiles.values().removeIf(loaded -> loaded.restored() && removeSessionFile(loaded.file()));
     }
 
-    /**
-     * Retries the playerdata save of a snapshot already applied to this player, so it is not applied
-     * again. If the save fails again the session stays pending and the next join restores it again.
-     */
+    // Retries only the save, so a snapshot already applied is not applied again over newer items
     private void retryUnsavedRestores(Player player) {
         for (SessionData session : List.copyOf(pendingSessions)) {
             if (!session.getPlayerId().equals(player.getUniqueId())) {
@@ -256,21 +236,11 @@ public class SessionManager {
         }
     }
 
-    /**
-     * Called from PlayerQuitEvent, before the server saves the player: ends the session so the
-     * snapshot and the removal of elevated permissions reach playerdata. A restored snapshot whose
-     * playerdata save failed gets one more save attempt.
-     */
     public void handleQuit(Player player) {
         retryUnsavedRestores(player);
         endSession(player);
     }
 
-    /**
-     * Plugin disable: ends every active session synchronously (each one isolated so a failure
-     * cannot skip the rest) and retries failed playerdata saves and file removals. It then persists
-     * the sessions whose snapshot could not be restored so the next join restores them.
-     */
     public void shutdown() {
         endAllSessions();
         for (Player player : List.copyOf(unsavedRestores.values())) {
@@ -279,9 +249,6 @@ public class SessionManager {
             }
         }
         retryRestoredFileCleanup();
-        sessionFiles.values().stream().filter(SessionFile::restored).forEach(loaded ->
-                plugin.getLogger().severe("Restored session file " + loaded.file().getName()
-                    + " could not be removed; delete it before the next start or it restores an old snapshot"));
         saveSessionsOnShutdown();
     }
 
@@ -289,17 +256,12 @@ public class SessionManager {
         Set<UUID> sessionIds = new HashSet<>(activeSessions.keySet());
         for (UUID playerId : sessionIds) {
             Player player = Bukkit.getPlayer(playerId);
-            SessionData session = player == null ? null : activeSessions.remove(playerId);
-            if (session != null) {
-                endOrKeepPending(player, session);
+            if (player != null) {
+                endSession(player);
             }
         }
     }
 
-    /**
-     * Writes active sessions, to resume, and ended sessions whose snapshot was not restored, to restore
-     * on the next join. A pending session that was never touched keeps the file it was loaded from.
-     */
     public void saveSessionsOnShutdown() {
         List<SessionData> toSave = new ArrayList<>(activeSessions.values());
         pendingSessions.stream().filter(session -> !session.isActive()).forEach(toSave::add);
@@ -328,25 +290,15 @@ public class SessionManager {
         plugin.getLogger().info("Saved " + savedCount + " sessions to individual YAML files");
     }
 
-    /**
-     * A loaded session reuses the file it was loaded from, even after a rename, so a player never
-     * has two files. Another session uses the player name, or the UUID if the player is offline
-     * or a loaded or unreadable file has that name, or the UUID and a random suffix if that is taken too.
-     */
+    // A loaded session keeps its own file; others use the player name, or a unique name if that file is taken
     private File sessionFileFor(SessionData session, File sessionsFolder, String playerName) {
         SessionFile loaded = sessionFiles.get(session);
         if (loaded != null) {
             return loaded.file();
         }
-        if (playerName != null) {
-            File byName = new File(sessionsFolder, playerName + ".yml");
-            if (!isFileTaken(byName)) {
-                return byName;
-            }
-        }
-        File byUuid = new File(sessionsFolder, session.getPlayerId() + ".yml");
-        if (!isFileTaken(byUuid)) {
-            return byUuid;
+        File byName = new File(sessionsFolder, (playerName != null ? playerName : session.getPlayerId()) + ".yml");
+        if (!isFileTaken(byName)) {
+            return byName;
         }
         return new File(sessionsFolder, session.getPlayerId() + "-" + UUID.randomUUID() + ".yml");
     }
@@ -356,10 +308,7 @@ public class SessionManager {
                 || sessionFiles.values().stream().anyMatch(other -> other.file().equals(file));
     }
 
-    /**
-     * Writes the whole session to a temporary file, then moves it over the target (atomically where
-     * the file system supports it), so a failed write leaves any existing file intact.
-     */
+    // Writes a temporary file first, so a failed write leaves any existing file intact
     private boolean saveSessionToYaml(SessionData session, File sessionFile) {
         try {
             File tempFile = new File(sessionFile.getParentFile(), sessionFile.getName() + ".tmp");
@@ -367,12 +316,7 @@ public class SessionManager {
             YamlConfiguration yaml = new YamlConfiguration();
             yaml.set("session", session);
             yaml.save(tempFile);
-            try {
-                Files.move(tempFile.toPath(), sessionFile.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException ignored) {
-                Files.move(tempFile.toPath(), sessionFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            }
+            Files.move(tempFile.toPath(), sessionFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
 
             plugin.getLogger().info("Saved session to " + sessionFile.getName() +
                 " with " + (session.getSavedState() != null ? "preserved" : "MISSING") + " player state");
@@ -401,7 +345,7 @@ public class SessionManager {
                 SessionData session = loadSessionFromYaml(sessionFile);
                 if (session != null) {
                     pendingSessions.add(session);
-                    sessionFiles.put(session, new SessionFile(session.getPlayerId(), sessionFile, false));
+                    sessionFiles.put(session, new SessionFile(sessionFile, false));
                     loadedCount++;
                 }
             } catch (Exception e) {
@@ -450,17 +394,13 @@ public class SessionManager {
         }
     }
 
-    /** The file may hold the only copy of a player's original state, so it is kept for staff to recover. */
+    // The file may hold the only copy of a player's original state, so it is kept for staff
     private void keepUnreadableFile(File sessionFile, String reason) {
         unreadableFiles.add(sessionFile);
         plugin.getLogger().severe("Failed to load session file " + sessionFile.getName() + " (" + reason + "); kept it, "
             + "it may hold a player's original state: fix or restore it manually, loading is retried on the next start");
     }
 
-    /**
-     * On join: resumes a pending session, or restores the snapshot of one that expired or whose end
-     * failed. A failure leaves the session pending, without session privileges, for the next join.
-     */
     public void restoreSessionForPlayer(Player player) {
         retryRestoredFileCleanup();
         if (pendingSessions.isEmpty()) {
@@ -488,7 +428,6 @@ public class SessionManager {
             }
 
             if (!sessionToRestore.isActive()) {
-                // Its end did not restore the snapshot: it is restored again, never resumed.
                 plugin.getLogger().info("Retrying the restore of an ended session for " + player.getName());
                 endOrKeepPending(player, sessionToRestore);
                 return;
@@ -499,7 +438,6 @@ public class SessionManager {
             if (sessionToRestore.getDuration().toMinutes() >= totalAllowedMinutes) {
                 plugin.getLogger().info("Session for " + player.getName() + " has expired, restoring saved state");
                 player.sendMessage(ComponentUtil.warning(plugin.getLangConfig().getMessage("session.expired-during-restart", player)));
-                // Never activated: ending it restores the snapshot, or keeps it pending for the next join.
                 endOrKeepPending(player, sessionToRestore);
                 return;
             }
@@ -513,32 +451,28 @@ public class SessionManager {
             startTimer(player, sessionToRestore);
             createBossBar(player, sessionToRestore.getMode());
 
+            player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage("session.restored-after-restart", player)));
+
+            plugin.getLogger().info("Restored " + sessionToRestore.getMode().getDisplayName() + " session for " + player.getName());
+
             pendingSessions.remove(sessionToRestore);
         } catch (Exception e) {
             plugin.getLogger().warning("Failed to restore session for player " + player.getName() + ": " + e.getMessage());
+            // Partly resumed: ending it undoes what was applied and restores the snapshot
             if (activeSessions.remove(playerId, sessionToRestore)) {
-                // Partly resumed: ending it undoes what was applied and restores the snapshot, or keeps it pending.
                 endOrKeepPending(player, sessionToRestore);
             }
-            return;
-        }
-
-        player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage("session.restored-after-restart", player)));
-
-        plugin.getLogger().info("Restored " + sessionToRestore.getMode().getDisplayName() + " session for " + player.getName());
-    }
-
-    /** {@code restored}: the snapshot was restored and saved, and only the file removal is left. */
-    private record SessionFile(UUID playerId, File file, boolean restored) {
-        SessionFile asRestored() {
-            return new SessionFile(playerId, file, true);
         }
     }
 
-    /** A configured node: {@code -key} is a LuckPerms negation (value false) of {@code key}. */
+    // restored: the snapshot is restored and saved, only the file removal is left
+    private record SessionFile(File file, boolean restored) {
+    }
+
+    // A "-key" entry is a negation of key (value false)
     private record ConfiguredNode(String configured, String key, boolean value) {
         static ConfiguredNode parse(String configured) {
-            if (configured.startsWith("-") && configured.length() > 1) {
+            if (configured.startsWith("-")) {
                 return new ConfiguredNode(configured, configured.substring(1), false);
             }
             return new ConfiguredNode(configured, configured, true);
@@ -589,22 +523,13 @@ public class SessionManager {
         plugin.getLuckPerms().getUserManager().saveUser(user);
     }
 
-    /**
-     * Clears nodes with the configured literal key (as before, which also removes literal
-     * {@code -key} nodes written by older versions) and, for a negation, the temporary
-     * {@code key=false} node this plugin adds. Permanent grants of {@code key} are untouched.
-     */
+    // For a negation also clears the temporary key=false node added on entry, never a permanent grant of key
     private static void clearNodes(User user, ConfiguredNode configured) {
-        Predicate<Node> literal = n -> n.getKey().equals(configured.configured());
-        Predicate<Node> negation = n -> !configured.value() && n.getKey().equals(configured.key())
-                && !n.getValue() && n.hasExpiry();
-        user.data().clear(literal.or(negation)::test);
+        user.data().clear(n -> n.getKey().equals(configured.configured())
+                || !configured.value() && n.getKey().equals(configured.key()) && !n.getValue() && n.hasExpiry());
     }
 
-    /**
-     * Restores the snapshot and saves it to playerdata; returns false (and logs) instead of throwing
-     * so cleanup always runs.
-     */
+    // Returns false instead of throwing so the rest of the cleanup always runs
     private boolean restorePlayerState(Player player, SessionData session) {
         unsavedRestores.remove(session);
         PlayerState state = session.getSavedState();
@@ -622,17 +547,13 @@ public class SessionManager {
         }
         plugin.getLogger().info("Successfully restored player state for " + player.getName());
         if (!savePlayerData(player)) {
-            // Applied but not on disk: the session stays pending, and quit or shutdown retries only the save.
             unsavedRestores.put(session, player);
             return false;
         }
         return true;
     }
 
-    /**
-     * Writes the restored state to playerdata immediately, so a crash before the next autosave
-     * cannot bring back the session inventory. False if the save failed.
-     */
+    // Saved right away so a crash before the next autosave cannot bring back the session inventory
     private boolean savePlayerData(Player player) {
         try {
             player.saveData();
@@ -662,7 +583,7 @@ public class SessionManager {
     private void createBossBar(Player player, DoubleLifeMode mode) {
         String titleKey = mode == DoubleLifeMode.TURBO ? "bossbar.turbo-active-title" : "bossbar.default-active-title";
         BossBar.Color color = mode == DoubleLifeMode.TURBO ? BossBar.Color.YELLOW : BossBar.Color.BLUE;
-
+        
         BossBar bossBar = BossBar.bossBar(
                 ComponentUtil.gradient(plugin.getLangConfig().getMessage(titleKey), "#FFD700", "#FF6B35"),
                 1.0f,
@@ -709,10 +630,9 @@ public class SessionManager {
         return activeSessions.containsKey(player.getUniqueId());
     }
 
-    /** True while the player has a pending session, a resumed one, or a restored one whose file is not removed yet. */
     private boolean hasUnsettledSession(UUID playerId) {
         return pendingSessions.stream().anyMatch(session -> session.getPlayerId().equals(playerId))
-                || sessionFiles.values().stream().anyMatch(loaded -> loaded.playerId().equals(playerId));
+                || sessionFiles.keySet().stream().anyMatch(session -> session.getPlayerId().equals(playerId));
     }
 
     public SessionData getSession(Player player) {

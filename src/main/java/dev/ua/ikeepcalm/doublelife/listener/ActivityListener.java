@@ -4,6 +4,7 @@ import dev.ua.ikeepcalm.doublelife.DoubleLife;
 import dev.ua.ikeepcalm.doublelife.domain.model.source.ActivityType;
 import dev.ua.ikeepcalm.doublelife.domain.model.SessionData;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.Container;
 import org.bukkit.entity.Player;
@@ -147,7 +148,7 @@ public class ActivityListener implements Listener {
     private void addBlockToBatch(Player player, Block block, boolean isPlace) {
         BlockBatchKey key = new BlockBatchKey(player.getUniqueId(), isPlace);
         List<BlockEntry> batch = blockBatch.computeIfAbsent(key, k -> new ArrayList<>());
-        batch.add(new BlockEntry(block.getType().name(), formatLocation(block.getLocation())));
+        batch.add(new BlockEntry(block.getType(), block.getLocation()));
         
         Long lastBatch = lastBatchTime.get(key);
         long now = System.currentTimeMillis();
@@ -162,7 +163,7 @@ public class ActivityListener implements Listener {
         }
     }
 
-    /** Called when the session ends, before the report is built. */
+    // Called when the session ends, before the report is built
     public void flushBlocks(UUID playerId, SessionData session) {
         for (boolean isPlace : new boolean[]{true, false}) {
             BlockBatchKey key = new BlockBatchKey(playerId, isPlace);
@@ -174,8 +175,8 @@ public class ActivityListener implements Listener {
         }
     }
 
-    private static void logBatch(SessionData session, List<BlockEntry> blocks, boolean isPlace) {
-        Map<String, Integer> counts = new LinkedHashMap<>();
+    private void logBatch(SessionData session, List<BlockEntry> blocks, boolean isPlace) {
+        Map<Material, Integer> counts = new HashMap<>();
         for (BlockEntry block : blocks) {
             counts.merge(block.material(), 1, Integer::sum);
         }
@@ -183,18 +184,19 @@ public class ActivityListener implements Listener {
         StringBuilder details = new StringBuilder();
         counts.forEach((mat, count) -> {
             if (!details.isEmpty()) details.append(", ");
-            details.append(mat).append(" x").append(count);
+            details.append(mat.name()).append(" x").append(count);
         });
 
+        String location = formatLocation(blocks.get(0).location());
         ActivityType type = isPlace ? ActivityType.BLOCK_PLACE : ActivityType.BLOCK_BREAK;
-        session.logActivity(type, details.toString(), blocks.get(0).location());
+        session.logActivity(type, details.toString(), location);
     }
 
     private record BlockBatchKey(UUID playerId, boolean place) {
     }
 
-    /** Plain values captured at event time; a Block read later would already show the new state. */
-    private record BlockEntry(String material, String location) {
+    // Captured at event time; the block already shows its new state later
+    private record BlockEntry(Material material, Location location) {
     }
     
     private String formatLocation(Location loc) {
