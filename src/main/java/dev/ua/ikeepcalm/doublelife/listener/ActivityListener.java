@@ -176,7 +176,7 @@ public class ActivityListener implements Listener {
     }
 
     private void logBatch(SessionData session, List<BlockEntry> blocks, boolean isPlace) {
-        Map<Material, Integer> counts = new HashMap<>();
+        Map<Material, Integer> counts = new LinkedHashMap<>();
         for (BlockEntry block : blocks) {
             counts.merge(block.material(), 1, Integer::sum);
         }

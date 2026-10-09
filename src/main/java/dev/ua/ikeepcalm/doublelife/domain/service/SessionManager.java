@@ -19,6 +19,7 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
@@ -316,7 +317,12 @@ public class SessionManager {
             YamlConfiguration yaml = new YamlConfiguration();
             yaml.set("session", session);
             yaml.save(tempFile);
-            Files.move(tempFile.toPath(), sessionFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            try {
+                Files.move(tempFile.toPath(), sessionFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(tempFile.toPath(), sessionFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            }
 
             plugin.getLogger().info("Saved session to " + sessionFile.getName() +
                 " with " + (session.getSavedState() != null ? "preserved" : "MISSING") + " player state");
@@ -472,7 +478,7 @@ public class SessionManager {
     // A "-key" entry is a negation of key (value false)
     private record ConfiguredNode(String configured, String key, boolean value) {
         static ConfiguredNode parse(String configured) {
-            if (configured.startsWith("-")) {
+            if (configured.startsWith("-") && configured.length() > 1) {
                 return new ConfiguredNode(configured, configured.substring(1), false);
             }
             return new ConfiguredNode(configured, configured, true);

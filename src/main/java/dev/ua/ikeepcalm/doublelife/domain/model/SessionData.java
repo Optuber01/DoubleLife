@@ -180,8 +180,8 @@ public class SessionData implements ConfigurationSerializable {
                 restored.add(new ActivityLog(
                         Instant.parse(String.valueOf(values.get("timestamp"))),
                         ActivityType.valueOf(String.valueOf(values.get("type"))),
-                        String.valueOf(values.get("details")),
-                        String.valueOf(values.get("location"))));
+                        values.get("details") == null ? "" : String.valueOf(values.get("details")),
+                        values.get("location") == null ? "Unknown" : String.valueOf(values.get("location"))));
             } catch (RuntimeException malformed) {
                 // Skip an entry that cannot be read so the session still loads
             }
