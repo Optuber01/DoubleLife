@@ -137,9 +137,13 @@ public class SessionManager {
         }
     }
 
-    // The session stays pending, ended so it is never resumed, until its snapshot is restored and saved
+    // The session stays pending, ended so it is never resumed, until its snapshot is restored and saved.
+    // A retry only restores again: the end time, report and cooldown are set once.
     private void finishSession(Player player, SessionData session) {
-        session.end();
+        boolean firstEnd = session.isActive();
+        if (firstEnd) {
+            session.end();
+        }
         if (!pendingSessions.contains(session)) {
             pendingSessions.add(session);
         }
@@ -155,10 +159,12 @@ public class SessionManager {
 
         stopTimerAndBossBar(player);
 
-        plugin.getSessionReporter().report(session, player.getName());
+        if (firstEnd) {
+            plugin.getSessionReporter().report(session, player.getName());
 
-        long cooldownDuration = plugin.getPluginConfig().getCooldownDuration() * 1000L;
-        cooldowns.put(player.getUniqueId(), System.currentTimeMillis() + cooldownDuration);
+            long cooldownDuration = plugin.getPluginConfig().getCooldownDuration() * 1000L;
+            cooldowns.put(player.getUniqueId(), System.currentTimeMillis() + cooldownDuration);
+        }
 
         if (restoreOk) {
             player.sendMessage(ComponentUtil.success(plugin.getLangConfig().getMessage("session.end-success", player)));
@@ -221,7 +227,7 @@ public class SessionManager {
             if (!session.getPlayerId().equals(player.getUniqueId())) {
                 continue;
             }
-            Player applied = unsavedRestores.remove(session);
+            Player applied = unsavedRestores.get(session);
             if (applied == player && savePlayerData(player)) {
                 settleSession(session);
             }
